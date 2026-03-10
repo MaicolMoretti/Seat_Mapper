@@ -27,7 +27,7 @@ project-root/
 
 ## Features
 
-- **Automatic Map Processing**: Detects rectangular tables, square seats, and numbered markers.
+- **Automatic Map Processing**: Detects tables, seats, and numbered markers.
 - **Seat Management**: Click on seats in the map to toggle Occupied/Free state.
 - **Control Panel**: Add or Remove occupants in bulk per table.
 - **Real-Time Statistics**: Live counters of free vs occupied seats.
