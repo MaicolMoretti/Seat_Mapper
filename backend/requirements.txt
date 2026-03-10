@@ -1,0 +1,8 @@
+fastapi[all]
+uvicorn
+opencv-python
+numpy
+pytesseract
+sqlalchemy
+python-multipart
+pydantic
