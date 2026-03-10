@@ -60,7 +60,7 @@ Follow these steps precisely:
    ```bash
    pip install -r requirements.txt
    ```
-   *(We recommend using a python virtual environment, `python -m venv venv` beforehand)*
+   *(I recommend using a python virtual environment, `python -m venv venv` beforehand)*
 
 3. **Start the FastAPI server**:
    ```bash
@@ -72,7 +72,7 @@ Follow these steps precisely:
    http://localhost:8000/
 
 ## Usage Guide
-1. **Upload a Map**: Click the "**Upload New Map**" button at the bottom left panel and select your schematic square layout (JPG). Wait about 3-5 seconds for the computer vision processor to find tables and calculate statistics.
+1. **Upload a Map**: Click the "**Upload New Map**" button at the bottom left panel and select your schematic square layout (JPG). Wait about 5-10 seconds for the computer vision processor to find tables and calculate statistics.
 2. **Control Bulk Seats**: Type the `table number` in the Control Panel, type an integer amount of seats, and click "Occupy Seats" or "Free Seats".
 3. **Direct Map View**: Hover over the seats directly on the map graphic, and click them to toggle individual occupancy (a Red Dot will appear).
 
