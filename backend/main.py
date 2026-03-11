@@ -11,7 +11,9 @@ import shutil
 import uuid
 import asyncio
 from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, WebSocket, WebSocketDisconnect, Header
+import json
+from ws_manager import manager, broadcast_layout_update
 
 app = FastAPI(title="Seat Assignment API")
 
@@ -27,8 +29,23 @@ app.add_middleware(
 # Register the manual-editing router
 app.include_router(manual_router.router)
 
+async def heartbeat():
+    while True:
+        await manager.broadcast({"type": "PING"})
+        await asyncio.sleep(20)
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(heartbeat())
+
 # Global dict to hold progress for each upload task
 progress_store = {}
+
+# ─── WebSocket Manager ───────────────────────────────────────────────────────
+# (Moved to ws_manager.py)
+
+# ─── Permission Helper ───────────────────────────────────────────────────────
+# (Moved to dependencies.py)
 
 # Init DB (creates new tables / columns on first run, no-op on existing ones)
 models.Base.metadata.create_all(bind=database.engine)
@@ -75,13 +92,22 @@ async def read_index():
     with open(os.path.join(FRONTEND_DIR, "index.html"), "r") as f:
         return f.read()
 
-# Dependency
-def get_db():
-    db = database.SessionLocal()
+from dependencies import get_db, get_client_type, require_desktop
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
     try:
-        yield db
-    finally:
-        db.close()
+        # Send initial state/welcome if needed
+        await websocket.send_json({"type": "CONNECTED", "message": "Real-time sync active"})
+        while True:
+            # Keep connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        manager.disconnect(websocket)
 
 
 # ─── Progress stream ─────────────────────────────────────────────────────────
@@ -153,6 +179,8 @@ def process_map_background(task_id: str, filepath: str):
         progress_store[task_id] = {
             "progress": 100, "message": "Done!", "done": True, "error": False
         }
+        # Notify clients about the new map
+        asyncio.run_coroutine_threadsafe(broadcast_layout_update(), asyncio.get_event_loop())
     except Exception as e:
         progress_store[task_id] = {
             "progress": 100, "message": f"Error: {str(e)}", "done": True, "error": True
@@ -233,17 +261,22 @@ def get_tables(db: Session = Depends(get_db)):
 
 
 @app.post("/seat/toggle/{seat_id}")
-def toggle_seat(seat_id: int, db: Session = Depends(get_db)):
+async def toggle_seat(seat_id: int, db: Session = Depends(get_db)):
     seat = db.query(models.Seat).filter(models.Seat.id == seat_id).first()
     if not seat:
         raise HTTPException(status_code=404, detail="Seat not found")
+    
+    # Log for undo
+    manual_router._log_action(db, "TOGGLE_OCCUPANCY", seat.id, {"occupied": seat.occupied})
+    
     seat.occupied = not seat.occupied
     db.commit()
+    await broadcast_layout_update()
     return {"id": seat.id, "occupied": seat.occupied}
 
 
 @app.post("/table/{table_number}/add-seats")
-def add_seats(table_number: int, amount: int = Form(...), db: Session = Depends(get_db)):
+async def add_seats(table_number: int, amount: int = Form(...), db: Session = Depends(get_db)):
     table = db.query(models.Table).filter(models.Table.table_number == table_number).first()
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -256,11 +289,12 @@ def add_seats(table_number: int, amount: int = Form(...), db: Session = Depends(
     for seat in free_seats:
         seat.occupied = True
     db.commit()
+    await broadcast_layout_update()
     return {"message": f"Added {len(free_seats)} seats (marked as occupied)"}
 
 
 @app.post("/table/{table_number}/remove-seats")
-def remove_seats(table_number: int, amount: int = Form(...), db: Session = Depends(get_db)):
+async def remove_seats(table_number: int, amount: int = Form(...), db: Session = Depends(get_db)):
     table = db.query(models.Table).filter(models.Table.table_number == table_number).first()
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -273,6 +307,7 @@ def remove_seats(table_number: int, amount: int = Form(...), db: Session = Depen
     for seat in occupied_seats:
         seat.occupied = False
     db.commit()
+    await broadcast_layout_update()
     return {"message": f"Removed {len(occupied_seats)} seats (marked as free)"}
 
 

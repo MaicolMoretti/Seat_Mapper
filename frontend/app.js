@@ -1,66 +1,84 @@
 const { useState, useEffect, useRef, useCallback } = React;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
-const API_BASE = 'http://localhost:8000';
+const API_BASE = window.location.origin; // Dynamically resolve for local network / ngrok
+const WS_BASE = window.location.origin.replace(/^http/, 'ws');
 const SEAT_HIT_RADIUS = 24;        // px in image space for click detection
-const OCCUPIED_COLOR  = '#ef4444'; // red-500
-const AUTO_COLOR      = '#22c55e'; // green-500  — auto-detected
-const MANUAL_COLOR    = '#3b82f6'; // blue-500   — manually added/edited
-const OVERRIDE_COLOR  = '#f59e0b'; // amber-500  — number overridden
+const OCCUPIED_COLOR = '#ef4444'; // red-500
+const AUTO_COLOR = '#22c55e'; // green-500  — auto-detected
+const MANUAL_COLOR = '#3b82f6'; // blue-500   — manually added/edited
+const OVERRIDE_COLOR = '#f59e0b'; // amber-500  — number overridden
 const TABLE_AREA_ALPHA = 0.08;     // fill opacity for table rect
 
 // ─── Tool definitions ────────────────────────────────────────────────────────
 const TOOLS = [
-    { id: 'addSeat',     label: '+ Add Seat',       icon: '🪑', hint: 'Click on the map to place a new seat' },
-    { id: 'removeSeat',  label: '✕ Remove Seat',    icon: '❌', hint: 'Click an existing seat to delete it' },
-    { id: 'addTable',    label: '+ Add Table',      icon: '⬜', hint: 'Drag to draw a new table region' },
-    { id: 'removeTable', label: '✕ Remove Table',   icon: '🗑',  hint: 'Click inside a table to delete it' },
-    { id: 'editNumber',  label: '✎ Edit Number',   icon: '🔢', hint: 'Click a table label to rename it' },
+    { id: 'addSeat', label: '+ Aggiungi posto', icon: '🪑', hint: 'Click on the map to place a new seat' },
+    { id: 'removeSeat', label: '✕ Rimuovi posto', icon: '❌', hint: 'Click an existing seat to delete it' },
+    { id: 'addTable', label: '+ Aggiungi tavolo', icon: '⬜', hint: 'Drag to draw a new table region' },
+    { id: 'removeTable', label: '✕ Rimuovi tavolo', icon: '🗑', hint: 'Click inside a table to delete it' },
+    { id: 'editNumber', label: '✎ Modifica numero', icon: '🔢', hint: 'Click a table label to rename it' },
 ];
 
 // ─── App ─────────────────────────────────────────────────────────────────────
 function App() {
-    const [mapData,  setMapData]  = useState(null);
-    const [tables,   setTables]   = useState([]);
-    const [stats,    setStats]    = useState({ num_tables: 0, total_seats: 0, occupied_seats: 0, free_seats: 0 });
+    const [mapData, setMapData] = useState(null);
+    const [tables, setTables] = useState([]);
+    const [stats, setStats] = useState({ num_tables: 0, total_seats: 0, occupied_seats: 0, free_seats: 0 });
+
+    // Device detection & Permissions
+    const [clientType, setClientType] = useState('desktop');
+    useEffect(() => {
+        const checkDevice = () => {
+            const mobile = window.innerWidth < 768 || /Mobi|Android/i.test(navigator.userAgent);
+            setClientType(mobile ? 'mobile' : 'desktop');
+        };
+        checkDevice();
+        window.addEventListener('resize', checkDevice);
+        return () => window.removeEventListener('resize', checkDevice);
+    }, []);
+
+    const isMobile = clientType === 'mobile';
 
     // Upload & Progress
-    const [uploading,       setUploading]       = useState(false);
-    const [uploadProgress,  setUploadProgress]  = useState(0);
-    const [message,         setMessage]         = useState('');
+    const [uploading, setUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
+    const [message, setMessage] = useState('');
 
     // Control panel
-    const [selTable,    setSelTable]    = useState('');
+    const [selTable, setSelTable] = useState('');
     const [seatsAmount, setSeatsAmount] = useState('');
 
     // Edit mode
-    const [editMode,    setEditMode]    = useState(false);
-    const [activeTool,  setActiveTool]  = useState(null);
+    const [editMode, setEditMode] = useState(false);
+    const [activeTool, setActiveTool] = useState(null);
 
     // Inline number editing
-    const [editingTableId,  setEditingTableId]  = useState(null);
+    const [editingTableId, setEditingTableId] = useState(null);
     const [editNumberValue, setEditNumberValue] = useState('');
 
-    // Zoom / pan
-    const [zoom, setZoom] = useState(1);
-    const [pan,  setPan]  = useState({ x: 0, y: 0 });
-    const isPanning   = useRef(false);
-    const panStart    = useRef({ mx: 0, my: 0, px: 0, py: 0 });
-    const hasDragged  = useRef(false);
+    // Viewport state
+    const [scale, setScale] = useState(1);
+    const [offset, setOffset] = useState({ x: 0, y: 0 });
+    const isPanning = useRef(false);
+    const lastMouse = useRef({ x: 0, y: 0 });
+    const touchStartDist = useRef(null);
+    const touchStartScale = useRef(1);
+    const lastTouch = useRef({ x: 0, y: 0 });
+    const hasDragged = useRef(false);
 
     // Add-table draw state
     const drawStart = useRef(null);   // { imgX, imgY } when mouse down
-    const drawRect  = useRef(null);   // { x, y, w, h } current preview
+    const drawRect = useRef(null);   // { x, y, w, h } current preview
 
     const canvasRef = useRef(null);
-    const imgRef    = useRef(null);
+    const imgRef = useRef(null);
     const tablesRef = useRef([]);
     const activeToolRef = useRef(null);
-    const editModeRef   = useRef(false);
+    const editModeRef = useRef(false);
 
-    useEffect(() => { tablesRef.current   = tables;     }, [tables]);
+    useEffect(() => { tablesRef.current = tables; }, [tables]);
     useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
-    useEffect(() => { editModeRef.current   = editMode;   }, [editMode]);
+    useEffect(() => { editModeRef.current = editMode; }, [editMode]);
 
     // ─── Data loading ───────────────────────────────────────────────────
     const fetchTables = useCallback(async () => {
@@ -80,8 +98,8 @@ function App() {
                 fetch(`${API_BASE}/layout`),
                 fetch(`${API_BASE}/stats`),
             ]);
-            const mapJson  = await mr.json();
-            const tabJson  = await tr.json();
+            const mapJson = await mr.json();
+            const tabJson = await tr.json();
             const statJson = await sr.json();
             if (mapJson.url) setMapData(mapJson);
             setTables(tabJson);
@@ -90,6 +108,39 @@ function App() {
     }, []);
 
     useEffect(() => { fetchAll(); }, [fetchAll]);
+
+    // ─── WebSocket Sync ─────────────────────────────────────────────────
+    useEffect(() => {
+        let ws;
+        let reconnectTimer;
+        const connect = () => {
+            console.log('Connecting to WebSocket...');
+            ws = new WebSocket(`${WS_BASE}/ws`);
+            ws.onopen = () => {
+                console.log('WebSocket Connected');
+                fetchAll(); // Resync state immediately upon connection
+            };
+            ws.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'LAYOUT_UPDATE') fetchTables();
+                if (data.type === 'STATS_UPDATE') fetchStats();
+                if (data.type === 'PING') ws.send(JSON.stringify({ type: 'PONG' }));
+            };
+            ws.onclose = () => {
+                console.log('WebSocket Disconnected, reconnecting...');
+                reconnectTimer = setTimeout(connect, 3000);
+            };
+            ws.onerror = (err) => {
+                console.error('WebSocket Error:', err);
+                ws.close();
+            };
+        };
+        connect();
+        return () => {
+            if (ws) ws.close();
+            clearTimeout(reconnectTimer);
+        };
+    }, []); // Only once on mount
 
     // ─── Upload ─────────────────────────────────────────────────────────
     const handleFileUpload = async (e) => {
@@ -141,11 +192,11 @@ function App() {
     // ─── Canvas helpers ──────────────────────────────────────────────────
     const getScales = useCallback(() => {
         const canvas = canvasRef.current;
-        const img    = imgRef.current;
+        const img = imgRef.current;
         if (!canvas || !img || img.naturalWidth === 0) return null;
         const rect = img.getBoundingClientRect();
         return {
-            scaleX: rect.width  / img.naturalWidth,
+            scaleX: rect.width / img.naturalWidth,
             scaleY: rect.height / img.naturalHeight,
             rect,
         };
@@ -163,14 +214,14 @@ function App() {
     // ─── Canvas drawing ──────────────────────────────────────────────────
     const drawCanvas = useCallback(() => {
         const canvas = canvasRef.current;
-        const img    = imgRef.current;
+        const img = imgRef.current;
         if (!canvas || !img || !img.complete || img.naturalWidth === 0) return;
 
         const rect = img.getBoundingClientRect();
-        canvas.width  = rect.width;
+        canvas.width = rect.width;
         canvas.height = rect.height;
 
-        const scaleX = rect.width  / img.naturalWidth;
+        const scaleX = rect.width / img.naturalWidth;
         const scaleY = rect.height / img.naturalHeight;
 
         const ctx = canvas.getContext('2d');
@@ -178,7 +229,7 @@ function App() {
 
         for (const table of tablesRef.current) {
             const { x, y, w, h } = table.contour;
-            const isManual   = table.detected_by === 'manual';
+            const isManual = table.detected_by === 'manual';
             const isOverride = table.number_overridden;
             const tableColor = isManual ? MANUAL_COLOR : AUTO_COLOR;
 
@@ -191,7 +242,7 @@ function App() {
 
             // Table bounding box stroke
             ctx.strokeStyle = tableColor;
-            ctx.lineWidth   = isManual ? 2.5 : 1.5;
+            ctx.lineWidth = isManual ? 2.5 : 1.5;
             ctx.setLineDash(isManual ? [6, 3] : []);
             ctx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
             ctx.restore();
@@ -206,7 +257,7 @@ function App() {
             ctx.font = `bold ${fontSize}px Inter, sans-serif`;
             const tw2 = ctx.measureText(labelText).width;
             ctx.fillStyle = isOverride ? OVERRIDE_COLOR : tableColor;
-            ctx.fillStyle = isManual   ? MANUAL_COLOR   : (isOverride ? OVERRIDE_COLOR : AUTO_COLOR);
+            ctx.fillStyle = isManual ? MANUAL_COLOR : (isOverride ? OVERRIDE_COLOR : AUTO_COLOR);
             ctx.fillText(labelText, labelX, labelY);
             ctx.restore();
 
@@ -219,7 +270,7 @@ function App() {
                 const seatColor = seat.detected_by === 'manual' ? MANUAL_COLOR : AUTO_COLOR;
 
                 ctx.strokeStyle = seatColor;
-                ctx.lineWidth   = seat.detected_by === 'manual' ? 2.5 : 1.5;
+                ctx.lineWidth = seat.detected_by === 'manual' ? 2.5 : 1.5;
                 ctx.setLineDash(seat.detected_by === 'manual' ? [4, 2] : []);
                 ctx.strokeRect(px - half, py - half, half * 2, half * 2);
                 ctx.setLineDash([]);
@@ -238,7 +289,7 @@ function App() {
             const { x, y, w, h } = drawRect.current;
             ctx.save();
             ctx.strokeStyle = MANUAL_COLOR;
-            ctx.lineWidth   = 2;
+            ctx.lineWidth = 2;
             ctx.setLineDash([8, 4]);
             ctx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
             ctx.fillStyle = 'rgba(59,130,246,0.1)';
@@ -251,7 +302,7 @@ function App() {
     useEffect(() => {
         const id = setTimeout(drawCanvas, 30);
         return () => clearTimeout(id);
-    }, [zoom, pan, drawCanvas]);
+    }, [scale, offset, drawCanvas]);
 
     // ─── Hit-test helpers ────────────────────────────────────────────────
     const hitSeat = (imgX, imgY) => {
@@ -280,44 +331,68 @@ function App() {
     const api = useCallback(async (path, body) => {
         const res = await fetch(`${API_BASE}${path}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
+            headers: { 
+                'Content-Type': 'application/json',
+                'X-Client-Type': clientType // Enforce on backend
+            },
+            body: body ? JSON.stringify(body) : undefined,
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
             throw new Error(err.detail || 'API error');
         }
         return res.json();
-    }, []);
+    }, [clientType]);
+
+    // ─── Undo Action ─────────────────────────────────────────────────────
+    const handleUndo = useCallback(async () => {
+        if (isMobile) return;
+        try {
+            await api('/manual/undo');
+        } catch (err) {
+            alert("Undo failed: " + err.message);
+        }
+    }, [api, isMobile]);
+
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+                e.preventDefault();
+                handleUndo();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [handleUndo]);
 
     // ─── Canvas interaction ──────────────────────────────────────────────
     const handleMouseDown = (e) => {
         // Start pan (always available) and draw-table drag
-        isPanning.current  = true;
+        isPanning.current = true;
         hasDragged.current = false;
-        panStart.current   = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y };
+        lastMouse.current = { x: e.clientX, y: e.clientY };
 
         if (activeToolRef.current === 'addTable' && editModeRef.current) {
             const canvas = canvasRef.current;
-            const rect   = canvas.getBoundingClientRect();
-            const ci     = canvasToImg(e.clientX - rect.left, e.clientY - rect.top);
+            const rect = canvas.getBoundingClientRect();
+            const ci = canvasToImg(e.clientX - rect.left, e.clientY - rect.top);
             if (ci) {
                 drawStart.current = ci;
-                drawRect.current  = null;
+                drawRect.current = null;
             }
         }
     };
 
     const handleMouseMove = (e) => {
         if (!isPanning.current) return;
-        const dx = e.clientX - panStart.current.mx;
-        const dy = e.clientY - panStart.current.my;
+        const dx = e.clientX - lastMouse.current.x;
+        const dy = e.clientY - lastMouse.current.y;
         if (Math.hypot(dx, dy) > 3) hasDragged.current = true;
 
         if (activeToolRef.current === 'addTable' && drawStart.current) {
             const canvas = canvasRef.current;
-            const rect   = canvas.getBoundingClientRect();
-            const ci     = canvasToImg(e.clientX - rect.left, e.clientY - rect.top);
+            const rect = canvas.getBoundingClientRect();
+            const ci = canvasToImg(e.clientX - rect.left, e.clientY - rect.top);
             if (ci) {
                 const x = Math.min(drawStart.current.imgX, ci.imgX);
                 const y = Math.min(drawStart.current.imgY, ci.imgY);
@@ -328,7 +403,8 @@ function App() {
             }
         } else {
             // normal pan
-            setPan({ x: panStart.current.px + dx, y: panStart.current.py + dy });
+            setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+            lastMouse.current = { x: e.clientX, y: e.clientY };
         }
     };
 
@@ -347,22 +423,63 @@ function App() {
                 } catch (err) { setMessage('Add table failed: ' + err.message); }
             }
             drawStart.current = null;
-            drawRect.current  = null;
+            drawRect.current = null;
             drawCanvas();
         }
     };
+
+    // ─── Touch interaction ──────────────────────────────────────────────
+    const handleTouchStart = (e) => {
+        if (e.touches.length === 1) {
+            isPanning.current = true;
+            lastTouch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        } else if (e.touches.length === 2) {
+            isPanning.current = false; // Disable pan during zoom
+            const dist = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+            );
+            touchStartDist.current = dist;
+            touchStartScale.current = scale;
+        }
+    };
+
+    const handleTouchMove = (e) => {
+        if (e.touches.length === 1 && isPanning.current) {
+            const dx = e.touches[0].clientX - lastTouch.current.x;
+            const dy = e.touches[0].clientY - lastTouch.current.y;
+            setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+            lastTouch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        } else if (e.touches.length === 2 && touchStartDist.current) {
+            const dist = Math.hypot(
+                e.touches[0].clientX - e.touches[1].clientX,
+                e.touches[0].clientY - e.touches[1].clientY
+            );
+            const ratio = dist / touchStartDist.current;
+            const nextScale = Math.min(Math.max(0.1, touchStartScale.current * ratio), 5);
+            setScale(nextScale);
+        }
+    };
+
+    const handleTouchEnd = () => {
+        isPanning.current = false;
+        touchStartDist.current = null;
+    };
+
+    const zoomIn = () => setScale(prev => Math.min(prev * 1.2, 5));
+    const zoomOut = () => setScale(prev => Math.max(prev / 1.2, 0.1));
 
     const handleCanvasClick = useCallback(async (e) => {
         if (hasDragged.current) return;
 
         const canvas = canvasRef.current;
-        const img    = imgRef.current;
+        const img = imgRef.current;
         if (!canvas || !img) return;
 
-        const rect = canvas.getBoundingClientRect();
+        const rect = img.getBoundingClientRect();
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
-        const imgX = cx * (img.naturalWidth  / rect.width);
+        const imgX = cx * (img.naturalWidth / rect.width);
         const imgY = cy * (img.naturalHeight / rect.height);
 
         const tool = activeToolRef.current;
@@ -424,7 +541,7 @@ function App() {
     const handleWheel = (e) => {
         e.preventDefault();
         const delta = e.deltaY < 0 ? 0.12 : -0.12;
-        setZoom(z => Math.min(Math.max(0.15, z + delta), 12));
+        setScale(z => Math.min(Math.max(0.15, z + delta), 12));
     };
 
     // ─── Control panel ───────────────────────────────────────────────────
@@ -444,11 +561,11 @@ function App() {
     const canvasCursor = () => {
         if (!editMode || !activeTool) return hasDragged.current ? 'grabbing' : 'crosshair';
         const cursors = {
-            addSeat:     'cell',
-            removeSeat:  'not-allowed',
-            addTable:    'crosshair',
+            addSeat: 'cell',
+            removeSeat: 'not-allowed',
+            addTable: 'crosshair',
             removeTable: 'not-allowed',
-            editNumber:  'text',
+            editNumber: 'text',
         };
         return cursors[activeTool] || 'crosshair';
     };
@@ -463,13 +580,13 @@ function App() {
         if (editingTableId === null) return null;
         const table = tablesRef.current.find(t => t.id === editingTableId);
         if (!table || !imgRef.current) return null;
-        const img  = imgRef.current;
+        const img = imgRef.current;
         const rect = img.getBoundingClientRect();
-        const scaleX = rect.width  / img.naturalWidth;
+        const scaleX = rect.width / img.naturalWidth;
         const scaleY = rect.height / img.naturalHeight;
         // Position input just above the table label
         const left = table.contour.x * scaleX + 4;
-        const top  = table.contour.y * scaleY - 34;
+        const top = table.contour.y * scaleY - 34;
         return (
             <div style={{
                 position: 'absolute', left: `${left}px`, top: `${top}px`,
@@ -496,13 +613,28 @@ function App() {
 
     // ─── Render ──────────────────────────────────────────────────────────
     return (
-        <div style={{ display: 'flex', height: '100vh', fontFamily: 'Inter,system-ui,sans-serif', background: '#f1f5f9' }}>
+        <div style={{ 
+            display: 'flex', 
+            flexDirection: isMobile ? 'column' : 'row', 
+            height: '100vh', 
+            fontFamily: 'Inter,system-ui,sans-serif', 
+            background: '#f1f5f9',
+            overflow: 'hidden'
+        }}>
 
             {/* ── Sidebar ─────────────────────────────────────────────── */}
             <div style={{
-                width: '300px', flexShrink: 0, background: 'white',
-                borderRight: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column',
-                padding: '20px', gap: '16px', overflowY: 'auto', boxShadow: '2px 0 8px rgba(0,0,0,.05)'
+                width: isMobile ? '100%' : '300px', 
+                height: isMobile ? 'auto' : '100%',
+                maxHeight: isMobile ? '40vh' : '100%',
+                flexShrink: 0, background: 'white',
+                borderRight: isMobile ? 'none' : '1px solid #e2e8f0',
+                borderTop: isMobile ? '1px solid #e2e8f0' : 'none',
+                display: 'flex', flexDirection: 'column',
+                padding: isMobile ? '12px 20px' : '20px', 
+                gap: isMobile ? '10px' : '16px', 
+                overflowY: 'auto', boxShadow: isMobile ? '0 -2px 10px rgba(0,0,0,.05)' : '2px 0 8px rgba(0,0,0,.05)',
+                order: isMobile ? 2 : 1
             }}>
                 <div>
                     <div style={{ fontSize: '20px', fontWeight: 700, color: '#0f172a' }}>Square Mapper</div>
@@ -514,16 +646,19 @@ function App() {
                     <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
                         Live Statistics
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
                         {[
-                            { label: 'Tables',   val: stats.num_tables,    bg: '#f8fafc', col: '#334155' },
-                            { label: 'Seats',    val: stats.total_seats,   bg: '#f8fafc', col: '#334155' },
-                            { label: 'Free',     val: stats.free_seats,    bg: '#f0fdf4', col: '#15803d' },
+                            { label: 'Tables', val: stats.num_tables, bg: '#f8fafc', col: '#334155' },
+                            { label: 'Seats', val: stats.total_seats, bg: '#f8fafc', col: '#334155' },
+                            { label: 'Free', val: stats.free_seats, bg: '#f0fdf4', col: '#15803d' },
                             { label: 'Occupied', val: stats.occupied_seats, bg: '#fef2f2', col: '#b91c1c' },
                         ].map(({ label, val, bg, col }) => (
-                            <div key={label} style={{ background: bg, border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px' }}>
-                                <div style={{ fontSize: '11px', color: col, marginBottom: '2px' }}>{label}</div>
-                                <div style={{ fontSize: '24px', fontWeight: 700, color: col }}>{val}</div>
+                            <div key={label} style={{ 
+                                background: bg, border: '1px solid #e2e8f0', borderRadius: '8px', 
+                                padding: isMobile ? '6px' : '10px', textAlign: 'center' 
+                            }}>
+                                <div style={{ fontSize: isMobile ? '9px' : '11px', color: col, marginBottom: '2px' }}>{label}</div>
+                                <div style={{ fontSize: isMobile ? '16px' : '24px', fontWeight: 700, color: col }}>{val}</div>
                             </div>
                         ))}
                     </div>
@@ -536,22 +671,24 @@ function App() {
                     </div>
                     <button
                         onClick={() => {
+                            if (isMobile) return; // Protected
                             const next = !editMode;
                             setEditMode(next);
                             if (!next) setActiveTool(null);
                         }}
+                        disabled={isMobile}
                         style={{
                             width: '100%', padding: '10px 14px', borderRadius: '8px', border: '2px solid',
                             borderColor: editMode ? '#2563eb' : '#e2e8f0',
-                            background: editMode ? '#eff6ff' : '#f8fafc',
-                            color: editMode ? '#1d4ed8' : '#64748b',
-                            fontWeight: 700, fontSize: '13px', cursor: 'pointer',
+                            background: isMobile ? '#f1f5f9' : (editMode ? '#eff6ff' : '#f8fafc'),
+                            color: isMobile ? '#94a3b8' : (editMode ? '#1d4ed8' : '#64748b'),
+                            fontWeight: 700, fontSize: '13px', cursor: isMobile ? 'not-allowed' : 'pointer',
                             display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center',
                             transition: 'all 0.15s',
                         }}
                     >
-                        <span>{editMode ? '✏️' : '🔒'}</span>
-                        {editMode ? 'Edit Layout Mode  ON' : 'Edit Layout Mode  OFF'}
+                        <span>{isMobile ? '🔒' : (editMode ? '✏️' : '🔒')}</span>
+                        {isMobile ? 'Edition limited on Mobile' : (editMode ? 'Edit Layout Mode  ON' : 'Edit Layout Mode  OFF')}
                     </button>
 
                     {/* Legend */}
@@ -571,7 +708,7 @@ function App() {
                     </div>
 
                     {/* Tool buttons (visible only in edit mode) */}
-                    {editMode && (
+                    {editMode && !isMobile && (
                         <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             {TOOLS.map(tool => (
                                 <button
@@ -610,29 +747,33 @@ function App() {
                     <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
                         Table Control
                     </div>
-                    <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        <label style={{ fontSize: '13px', fontWeight: 500, color: '#475569' }}>
-                            Table Number
+                    <div style={{ 
+                        background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px', 
+                        padding: '12px', display: 'flex', flexDirection: isMobile ? 'row' : 'column', 
+                        gap: '10px', alignItems: isMobile ? 'flex-end' : 'stretch'
+                    }}>
+                        <label style={{ flex: 1, fontSize: '12px', fontWeight: 500, color: '#475569' }}>
+                            Table #
                             <input type="number" value={selTable} onChange={e => setSelTable(e.target.value)}
-                                placeholder="e.g. 1"
-                                style={{ display: 'block', width: '100%', marginTop: '4px', padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }}
+                                placeholder="1"
+                                style={{ display: 'block', width: '100%', marginTop: '4px', padding: '7px 8px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }}
                             />
                         </label>
-                        <label style={{ fontSize: '13px', fontWeight: 500, color: '#475569' }}>
-                            Seat Amount
+                        <label style={{ flex: 1, fontSize: '12px', fontWeight: 500, color: '#475569' }}>
+                            Qty
                             <input type="number" value={seatsAmount} onChange={e => setSeatsAmount(e.target.value)}
-                                placeholder="How many"
-                                style={{ display: 'block', width: '100%', marginTop: '4px', padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }}
+                                placeholder="8"
+                                style={{ display: 'block', width: '100%', marginTop: '4px', padding: '7px 8px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }}
                             />
                         </label>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                        <div style={{ display: 'flex', gap: '6px', marginBottom: isMobile ? '2px' : '0' }}>
                             <button onClick={() => callTableEndpoint('add-seats')}
-                                style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '6px', padding: '8px 4px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>
-                                + Occupy
+                                style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '6px', padding: '8px 12px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>
+                                +
                             </button>
                             <button onClick={() => callTableEndpoint('remove-seats')}
-                                style={{ background: '#e2e8f0', color: '#334155', border: 'none', borderRadius: '6px', padding: '8px 4px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>
-                                − Free
+                                style={{ background: '#e2e8f0', color: '#334155', border: 'none', borderRadius: '6px', padding: '8px 12px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>
+                                −
                             </button>
                         </div>
                     </div>
@@ -649,18 +790,20 @@ function App() {
                     </div>
                 )}
 
-                <div style={{ marginTop: 'auto', borderTop: '1px solid #e2e8f0', paddingTop: '16px' }}>
-                    <label style={{
-                        display: 'block', textAlign: 'center',
-                        background: uploading ? '#94a3b8' : '#2563eb',
-                        color: 'white', fontWeight: 600, fontSize: '14px', padding: '12px',
-                        borderRadius: '8px', cursor: uploading ? 'default' : 'pointer', transition: 'background 0.2s'
-                    }}>
-                        {uploading ? 'Processing…' : '⬆  Upload New Map'}
-                        <input type="file" accept="image/jpeg,image/jpg" onChange={handleFileUpload}
-                            disabled={uploading} style={{ display: 'none' }} />
-                    </label>
-                </div>
+                {!isMobile && (
+                    <div style={{ marginTop: 'auto', borderTop: '1px solid #e2e8f0', paddingTop: '16px' }}>
+                        <label style={{
+                            display: 'block', textAlign: 'center',
+                            background: uploading ? '#94a3b8' : '#2563eb',
+                            color: 'white', fontWeight: 600, fontSize: '14px', padding: '12px',
+                            borderRadius: '8px', cursor: uploading ? 'default' : 'pointer', transition: 'background 0.2s'
+                        }}>
+                            {uploading ? 'Processing…' : '⬆  Upload New Map'}
+                            <input type="file" accept="image/jpeg,image/jpg" onChange={handleFileUpload}
+                                disabled={uploading} style={{ display: 'none' }} />
+                        </label>
+                    </div>
+                )}
             </div>
 
             {/* ── Map viewport ─────────────────────────────────────────── */}
@@ -668,12 +811,16 @@ function App() {
                 style={{
                     flex: 1, position: 'relative', overflow: 'hidden', background: '#e2e8f0',
                     cursor: isPanning.current ? 'grabbing' : (editMode && activeTool ? canvasCursor() : 'grab'),
+                    order: isMobile ? 1 : 2
                 }}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
                 onWheel={handleWheel}
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
             >
                 {/* Zoom hint */}
                 <div style={{
@@ -702,12 +849,9 @@ function App() {
 
                 {/* Zoom controls */}
                 <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 20, display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    {[{ label: '+', delta: 0.2 }, { label: '⟳', delta: null }, { label: '−', delta: -0.2 }].map(btn => (
+                    {[{ label: '+', action: zoomIn }, { label: '⟳', action: () => { setScale(1); setOffset({ x: 0, y: 0 }); } }, { label: '−', action: zoomOut }].map(btn => (
                         <button key={btn.label}
-                            onClick={() => {
-                                if (btn.delta === null) { setZoom(1); setPan({ x: 0, y: 0 }); }
-                                else setZoom(z => Math.min(Math.max(0.15, z + btn.delta), 12));
-                            }}
+                            onClick={btn.action}
                             style={{
                                 width: '32px', height: '32px', background: 'white', border: '1px solid #e2e8f0',
                                 borderRadius: '6px', fontSize: '16px', cursor: 'pointer',
@@ -724,22 +868,23 @@ function App() {
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         pointerEvents: 'none',
                     }}>
+                        {/* Visual canvas */}
                         <div style={{
                             position: 'relative', display: 'inline-block',
-                            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                            transformOrigin: 'center center',
-                            transition: isPanning.current ? 'none' : 'transform 60ms linear',
+                            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+                            transformOrigin: '0 0',
+                            transition: (isPanning.current || touchStartDist.current) ? 'none' : 'transform 0.1s ease-out',
                             pointerEvents: 'auto',
                             borderRadius: '8px', boxShadow: '0 4px 24px rgba(0,0,0,.18)',
                         }}>
                             <img
                                 ref={imgRef}
-                                src={`${API_BASE}${mapData.url}?_=${mapData.ts || ''}`}
+                                src={`${API_BASE}${mapData.url}`}
                                 alt="Map"
                                 draggable={false}
                                 onLoad={drawCanvas}
                                 style={{
-                                    display: 'block', maxWidth: '80vw', maxHeight: '80vh',
+                                    display: 'block', maxWidth: '85vw', maxHeight: '85vh',
                                     userSelect: 'none', borderRadius: '8px', background: 'white',
                                 }}
                             />
@@ -751,7 +896,6 @@ function App() {
                                     cursor: 'inherit', touchAction: 'none',
                                 }}
                             />
-                            {/* Inline number-edit overlay */}
                             <NumberEditOverlay />
                         </div>
                     </div>

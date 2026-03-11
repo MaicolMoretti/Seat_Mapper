@@ -56,3 +56,12 @@ class TableNumberOverride(Base):
     manual_number = Column(Integer, nullable=False)
 
     table = relationship("Table", back_populates="number_override")
+
+class ActionLog(Base):
+    """Stores actions for Undo functionality."""
+    __tablename__ = "action_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    action_type = Column(String)  # e.g., "TOGGLE_SEAT", "ADD_SEAT", etc.
+    target_id = Column(Integer)   # e.g., seat_id or table_id
+    old_state = Column(String)    # JSON string of the state before action
+    timestamp = Column(Float)
