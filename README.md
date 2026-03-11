@@ -46,6 +46,7 @@ project-root/
    - Download for Windows from: [UB-Mannheim Tesseract Installer](https://github.com/UB-Mannheim/tesseract/wiki)
    - If `pytesseract` cannot find `tesseract.exe`, edit `backend/vision/processor.py` and uncomment/update this line:
      `pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'`
+3. **Ngrok** (for remote access - optional)
 
 ## Installation & Running
 
@@ -64,25 +65,23 @@ Follow these steps precisely:
 
 3. **Start the FastAPI server**:
    ```bash
-   uvicorn main:app --reload --host localhost --port 8000
+   uvicorn main:app --reload --host 0.0.0.0 --port 8000
    ```
 
 4. **Access the application**:
-   Open a browser and navigate to:
-   http://localhost:8000/
+   - **Locally**: http://localhost:8000/
+   - **Network**: http://<your-ip>:8000/
 
-## Usage Guide
+## Usage Guide & Remote Access
+
 1. **Upload a Map**: Click the "**Upload New Map**" button at the bottom left panel and select your schematic square layout (JPG). Wait about 3-5 seconds for the computer vision processor to find tables and calculate statistics.
 2. **Control Bulk Seats**: Type the `table number` in the Control Panel, type an integer amount of seats, and click "Occupy Seats" or "Free Seats".
 3. **Direct Map View**: Hover over the seats directly on the map graphic, and click them to toggle individual occupancy (a Red Dot will appear).
+4. **Access Locally**: Use `http://<your-ip>:8000` from your tablet/phone on the same WiFi.
+5. **Access Remotely**: Use ngrok as described in [ngrok_setup.md](ngrok_setup.md).
 
 ## Detection Improvement Tips
 If the detector is missing labels or tables:
 - **Contrast**: Ensure your text markers are purely black and solid, and your background is white.
 - **Size**: Tables should be clear rectangles, and seats should be consistent small squares along the outline. 
 - **Modifications**: You can adjust `area` thresholds or `cv2.threshold` values inside `backend/vision/processor.py`.
-
-Accesso remoto: 
-Start the server: python -m uvicorn main:app --host 0.0.0.0 --port 8000 (inside backend folder).
-Access locally: Use http://<your-ip>:8000 from your tablet/phone.
-Access remotely: Use ngrok as described in  ngrok_setup.md.
