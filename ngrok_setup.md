@@ -1,6 +1,6 @@
 # Guida al Setup di ngrok per Accesso Remoto
 
-Per rendere la tua web-app accessibile da qualsiasi parte del mondo (e ottenere una connessione **HTTPS** sicura), puoi utilizzare **ngrok**.
+Usato per rendere la web-app accessibile da qualsiasi parte del mondo (e ottenere una connessione **HTTPS** sicura).
 
 ## 1. Installazione
 
