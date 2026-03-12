@@ -1,4 +1,4 @@
-# Square Mapper Web Application
+# Seat Mapper Web Application
 
 A complete web application that manages seat assignments for tables in a public square using a map image. It uses Computer Vision (OpenCV) and Tesseract OCR to automatically detect tables, seats, and table numbers from a JPG map layout.
 
