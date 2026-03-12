@@ -61,7 +61,7 @@ Follow these steps precisely:
    ```bash
    pip install -r requirements.txt
    ```
-   *(We recommend using a python virtual environment, `python -m venv venv` beforehand)*
+   *(I recommend using a python virtual environment, `python -m venv venv` beforehand)*
 
 3. **Start the FastAPI server**:
    ```bash

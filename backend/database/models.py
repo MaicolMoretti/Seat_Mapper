@@ -19,6 +19,7 @@ class Table(Base):
     contour_y = Column(Integer)
     contour_w = Column(Integer)
     contour_h = Column(Integer)
+    angle = Column(Float, default=0.0)
 
     # "auto" = detected by vision pipeline, "manual" = added by user
     detected_by = Column(String, default="auto")
@@ -40,6 +41,7 @@ class Seat(Base):
     # Position of the seat (centre point)
     position_x = Column(Integer)
     position_y = Column(Integer)
+    angle = Column(Float, default=0.0)
     
     occupied = Column(Boolean, default=False)
 

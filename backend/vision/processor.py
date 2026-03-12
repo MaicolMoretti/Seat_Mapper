@@ -151,9 +151,19 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
         if area > 900 and area < total_px * 0.35:
             # Check if it looks roughly rectangular (not a crazy squiggle)
             if _is_rectangular_like(approx, area, ar):
+                # Use minAreaRect to get rotation
+                rect = cv2.minAreaRect(cnt)
+                (cx, cy), (width, height), angle = rect
+                
+                # Normalize angle: OpenCV minAreaRect angle can be tricky depending on version
+                # We want it to be -45 to 45.
+                if width < height:
+                    angle = angle - 90
+                    width, height = height, width
+                
                 tables.append({
-                    "bbox": (x, y, w, h),
-                    "center": (x + w // 2, y + h // 2),
+                    "bbox": (cx, cy, width, height, angle),
+                    "center": (cx, cy),
                     "seats": [],
                     "table_id": None
                 })
@@ -164,11 +174,19 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
         if area <= 900 and area >= 8:
             # Very generous aspect ratio for seats, up to 12 vertices (rounded small squares)
             if len(approx) <= 12 and 0.25 <= ar <= 4.0 and circ < 0.85:
+                rect = cv2.minAreaRect(cnt)
+                (cx, cy), (width, height), angle = rect
+                
+                if width < height:
+                    angle = angle - 90
+                    width, height = height, width
+
                 seat_candidates.append({
-                    "cx": x + w // 2,
-                    "cy": y + h // 2,
-                    "w": w,
-                    "h": h,
+                    "cx": cx,
+                    "cy": cy,
+                    "w": width,
+                    "h": height,
+                    "angle": angle
                 })
 
     _prog(65, "De-duplicating detected shapes...")
@@ -197,11 +215,12 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
         best_d = float('inf')
         sx, sy = seat["cx"], seat["cy"]
         for t in tables:
-            tx, ty, tw, th = t["bbox"]
-            # Point-to-rectangle distance (0 if inside)
-            dx = max(tx - sx, 0, sx - (tx + tw))
-            dy = max(ty - sy, 0, sy - (ty + th))
-            dist = math.hypot(dx, dy)
+            # t["bbox"] is (cx, cy, w, h, angle)
+            tcx, tcy, tw, th, tangle = t["bbox"]
+            
+            # Simple point-to-rotated-rect distance is hard; 
+            # for assignment, we'll use distance to table center.
+            dist = math.hypot(tcx - sx, tcy - sy)
             if dist < best_d:
                 best_d = dist
                 best_t = t
@@ -220,7 +239,7 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
         if t is not None:
             t["seats"].append({
                 "position": (s["cx"], s["cy"]),
-                "bbox": (s["cx"] - s["w"] // 2, s["cy"] - s["h"] // 2, s["w"], s["h"]),
+                "bbox": (s["cx"], s["cy"], s["w"], s["h"], s["angle"]), # Rotated bbox
                 "occupied": False
             })
 
@@ -229,15 +248,12 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
     assigned_ids = set()
 
     for t in tables:
-        tcx, tcy = t["center"]
+        tcx, tcy, tw, th, tangle = t["bbox"]
         best_c = None
         best_d = float('inf')
         for c in circle_markers:
-            # The circle should be inside or very close to the table bbox
-            tx, ty, tw, th = t["bbox"]
-            inside = (tx <= c["cx"] <= tx + tw) and (ty <= c["cy"] <= ty + th)
             d = math.hypot(tcx - c["cx"], tcy - c["cy"])
-            if (inside or d < tw * 1.5) and d < best_d:
+            if d < tw * 1.5 and d < best_d:
                 best_d = d
                 best_c = c
         if best_c and best_c["number"] is not None:
@@ -258,22 +274,25 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
     for t in tables:
         seats_out = []
         for idx, s in enumerate(t["seats"]):
-            px, py = s["position"]
-            bx, by, bw, bh = s["bbox"]
+            cx, cy, sw, sh, sangle = s["bbox"]
             seats_out.append({
                 "seat_id": idx + 1,
-                "position": [px, py],
-                "bbox": [bx, by, bw, bh],
+                "position": [cx, cy],
+                "bbox": [cx, cy, sw, sh, sangle],
+                "angle": sangle,
                 "occupied": False
             })
+        tcx, tcy, tw, th, tangle = t["bbox"]
         output.append({
             "table_id": t["table_id"],
             "contour": {
-                "x": t["bbox"][0],
-                "y": t["bbox"][1],
-                "w": t["bbox"][2],
-                "h": t["bbox"][3]
+                "x": tcx,
+                "y": tcy,
+                "w": tw,
+                "h": th,
+                "angle": tangle
             },
+            "angle": tangle,
             "seats": seats_out
         })
 
@@ -289,16 +308,21 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
 
     # Draw all tables in blue
     for t in tables:
-        x, y, w, h = t["bbox"]
-        cv2.rectangle(debug_img, (x, y), (x + w, y + h), (255, 0, 0), 2)
-        cv2.putText(debug_img, f"T{t['table_id']}", (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        # t["bbox"] is (cx, cy, w, h, angle)
+        rect = ((t["bbox"][0], t["bbox"][1]), (t["bbox"][2], t["bbox"][3]), t["bbox"][4])
+        box = cv2.boxPoints(rect)
+        box = np.int32(box)
+        cv2.drawContours(debug_img, [box], 0, (255, 0, 0), 2)
+        cv2.putText(debug_img, f"T{t['table_id']}", (int(t["bbox"][0]), int(t["bbox"][1])), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
         
         # Draw all seats in green
         for s in t["seats"]:
-            sx, sy = s["position"]
-            bx, by, bw, bh = s["bbox"]
-            cv2.rectangle(debug_img, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
-            cv2.circle(debug_img, (int(sx), int(sy)), 3, (0, 0, 255), -1)
+            # s["bbox"] is (cx, cy, w, h, angle)
+            s_rect = ((s["bbox"][0], s["bbox"][1]), (s["bbox"][2], s["bbox"][3]), s["bbox"][4])
+            s_box = cv2.boxPoints(s_rect)
+            s_box = np.int32(s_box)
+            cv2.drawContours(debug_img, [s_box], 0, (0, 255, 0), 2)
+            cv2.circle(debug_img, (int(s["bbox"][0]), int(s["bbox"][1])), 3, (0, 0, 255), -1)
             
     # Draw circle markers in magenta
     for c in circle_markers:

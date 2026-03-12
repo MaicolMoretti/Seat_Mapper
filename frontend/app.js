@@ -228,59 +228,65 @@ function App() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         for (const table of tablesRef.current) {
-            const { x, y, w, h } = table.contour;
+            const { x, y, w, h, angle } = table.contour;
             const isManual = table.detected_by === 'manual';
             const isOverride = table.number_overridden;
             const tableColor = isManual ? MANUAL_COLOR : AUTO_COLOR;
 
-            // Table bounding box fill
             ctx.save();
+            ctx.translate(x * scaleX, y * scaleY);
+            ctx.rotate((angle * Math.PI) / 180);
+
+            // Table bounding box fill
             ctx.fillStyle = isManual
                 ? 'rgba(59,130,246,0.06)'
                 : 'rgba(34,197,94,0.06)';
-            ctx.fillRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+            ctx.fillRect(- (w * scaleX) / 2, - (h * scaleY) / 2, w * scaleX, h * scaleY);
 
             // Table bounding box stroke
             ctx.strokeStyle = tableColor;
             ctx.lineWidth = isManual ? 2.5 : 1.5;
             ctx.setLineDash(isManual ? [6, 3] : []);
-            ctx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+            ctx.strokeRect(- (w * scaleX) / 2, - (h * scaleY) / 2, w * scaleX, h * scaleY);
             ctx.restore();
 
-            // Table label background + text
-            const labelX = x * scaleX + 4;
-            const labelY = y * scaleY - 6;
+            // Table label
             const fontSize = Math.max(11, 13 * scaleX);
             const labelText = `T${table.table_number}${isOverride ? ' ✎' : ''}`;
-
             ctx.save();
+            ctx.translate(x * scaleX, y * scaleY);
             ctx.font = `bold ${fontSize}px Inter, sans-serif`;
             const tw2 = ctx.measureText(labelText).width;
-            ctx.fillStyle = isOverride ? OVERRIDE_COLOR : tableColor;
             ctx.fillStyle = isManual ? MANUAL_COLOR : (isOverride ? OVERRIDE_COLOR : AUTO_COLOR);
-            ctx.fillText(labelText, labelX, labelY);
+            ctx.fillText(labelText, -tw2/2, -(h * scaleY)/2 - 6);
             ctx.restore();
 
             // Seats
             for (const seat of table.seats) {
                 const [sx, sy] = seat.position;
+                const sAngle = seat.angle || 0;
                 const px = sx * scaleX;
                 const py = sy * scaleY;
                 const half = Math.max(5, 7 * Math.min(scaleX, scaleY));
                 const seatColor = seat.detected_by === 'manual' ? MANUAL_COLOR : AUTO_COLOR;
 
+                ctx.save();
+                ctx.translate(px, py);
+                ctx.rotate((sAngle * Math.PI) / 180);
+
                 ctx.strokeStyle = seatColor;
                 ctx.lineWidth = seat.detected_by === 'manual' ? 2.5 : 1.5;
                 ctx.setLineDash(seat.detected_by === 'manual' ? [4, 2] : []);
-                ctx.strokeRect(px - half, py - half, half * 2, half * 2);
+                ctx.strokeRect(-half, -half, half * 2, half * 2);
                 ctx.setLineDash([]);
 
                 if (seat.occupied) {
                     ctx.fillStyle = OCCUPIED_COLOR;
                     ctx.beginPath();
-                    ctx.arc(px, py, half * 0.65, 0, Math.PI * 2);
+                    ctx.arc(0, 0, half * 0.65, 0, Math.PI * 2);
                     ctx.fill();
                 }
+                ctx.restore();
             }
         }
 
@@ -321,8 +327,16 @@ function App() {
 
     const hitTable = (imgX, imgY) => {
         for (const table of tablesRef.current) {
-            const { x, y, w, h } = table.contour;
-            if (imgX >= x && imgX <= x + w && imgY >= y && imgY <= y + h) return table;
+            const { x, y, w, h, angle } = table.contour;
+            // Coordinate transformation to local rotated space
+            const dx = imgX - x;
+            const dy = imgY - y;
+            const cos = Math.cos(-angle * Math.PI / 180);
+            const sin = Math.sin(-angle * Math.PI / 180);
+            const localX = dx * cos - dy * sin;
+            const localY = dx * sin + dy * cos;
+            
+            if (Math.abs(localX) <= w / 2 && Math.abs(localY) <= h / 2) return table;
         }
         return null;
     };
@@ -331,7 +345,7 @@ function App() {
     const api = useCallback(async (path, body) => {
         const res = await fetch(`${API_BASE}${path}`, {
             method: 'POST',
-            headers: { 
+            headers: {
                 'Content-Type': 'application/json',
                 'X-Client-Type': clientType // Enforce on backend
             },
@@ -613,31 +627,31 @@ function App() {
 
     // ─── Render ──────────────────────────────────────────────────────────
     return (
-        <div style={{ 
-            display: 'flex', 
-            flexDirection: isMobile ? 'column' : 'row', 
-            height: '100vh', 
-            fontFamily: 'Inter,system-ui,sans-serif', 
+        <div style={{
+            display: 'flex',
+            flexDirection: isMobile ? 'column' : 'row',
+            height: '100vh',
+            fontFamily: 'Inter,system-ui,sans-serif',
             background: '#f1f5f9',
             overflow: 'hidden'
         }}>
 
             {/* ── Sidebar ─────────────────────────────────────────────── */}
             <div style={{
-                width: isMobile ? '100%' : '300px', 
+                width: isMobile ? '100%' : '300px',
                 height: isMobile ? 'auto' : '100%',
                 maxHeight: isMobile ? '40vh' : '100%',
                 flexShrink: 0, background: 'white',
                 borderRight: isMobile ? 'none' : '1px solid #e2e8f0',
                 borderTop: isMobile ? '1px solid #e2e8f0' : 'none',
                 display: 'flex', flexDirection: 'column',
-                padding: isMobile ? '12px 20px' : '20px', 
-                gap: isMobile ? '10px' : '16px', 
+                padding: isMobile ? '12px 20px' : '20px',
+                gap: isMobile ? '10px' : '16px',
                 overflowY: 'auto', boxShadow: isMobile ? '0 -2px 10px rgba(0,0,0,.05)' : '2px 0 8px rgba(0,0,0,.05)',
                 order: isMobile ? 2 : 1
             }}>
                 <div>
-                    <div style={{ fontSize: '20px', fontWeight: 700, color: '#0f172a' }}>Square Mapper</div>
+                    <div style={{ fontSize: '20px', fontWeight: 700, color: '#0f172a' }}>Seat Mapper</div>
                     <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>Seat assignment manager</div>
                 </div>
 
@@ -653,9 +667,9 @@ function App() {
                             { label: 'Free', val: stats.free_seats, bg: '#f0fdf4', col: '#15803d' },
                             { label: 'Occupied', val: stats.occupied_seats, bg: '#fef2f2', col: '#b91c1c' },
                         ].map(({ label, val, bg, col }) => (
-                            <div key={label} style={{ 
-                                background: bg, border: '1px solid #e2e8f0', borderRadius: '8px', 
-                                padding: isMobile ? '6px' : '10px', textAlign: 'center' 
+                            <div key={label} style={{
+                                background: bg, border: '1px solid #e2e8f0', borderRadius: '8px',
+                                padding: isMobile ? '6px' : '10px', textAlign: 'center'
                             }}>
                                 <div style={{ fontSize: isMobile ? '9px' : '11px', color: col, marginBottom: '2px' }}>{label}</div>
                                 <div style={{ fontSize: isMobile ? '16px' : '24px', fontWeight: 700, color: col }}>{val}</div>
@@ -747,9 +761,9 @@ function App() {
                     <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
                         Table Control
                     </div>
-                    <div style={{ 
-                        background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px', 
-                        padding: '12px', display: 'flex', flexDirection: isMobile ? 'row' : 'column', 
+                    <div style={{
+                        background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px',
+                        padding: '12px', display: 'flex', flexDirection: isMobile ? 'row' : 'column',
                         gap: '10px', alignItems: isMobile ? 'flex-end' : 'stretch'
                     }}>
                         <label style={{ flex: 1, fontSize: '12px', fontWeight: 500, color: '#475569' }}>

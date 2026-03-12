@@ -16,6 +16,7 @@ import json
 from ws_manager import manager, broadcast_layout_update
 
 app = FastAPI(title="Seat Assignment API")
+main_loop = None
 
 # Setup CORS for frontend
 app.add_middleware(
@@ -36,6 +37,8 @@ async def heartbeat():
 
 @app.on_event("startup")
 async def startup_event():
+    global main_loop
+    main_loop = asyncio.get_running_loop()
     asyncio.create_task(heartbeat())
 
 # Global dict to hold progress for each upload task
@@ -70,9 +73,17 @@ def _migrate_sqlite():
     if "detected_by" not in _columns("tables"):
         cur.execute("ALTER TABLE tables ADD COLUMN detected_by TEXT DEFAULT 'auto'")
 
-    # seats: add detected_by
+    # seats: add detected_by and angle
     if "detected_by" not in _columns("seats"):
         cur.execute("ALTER TABLE seats ADD COLUMN detected_by TEXT DEFAULT 'auto'")
+    
+    # tables: add angle
+    if "angle" not in _columns("tables"):
+        cur.execute("ALTER TABLE tables ADD COLUMN angle FLOAT DEFAULT 0.0")
+        
+    # seats: add angle
+    if "angle" not in _columns("seats"):
+        cur.execute("ALTER TABLE seats ADD COLUMN angle FLOAT DEFAULT 0.0")
 
     conn.commit()
     conn.close()
@@ -159,6 +170,7 @@ def process_map_background(task_id: str, filepath: str):
                 contour_y=t_data["contour"]["y"],
                 contour_w=t_data["contour"]["w"],
                 contour_h=t_data["contour"]["h"],
+                angle=t_data["contour"].get("angle", 0.0),
                 detected_by="auto",          # ← stamped by pipeline
             )
             db.add(table)
@@ -170,6 +182,7 @@ def process_map_background(task_id: str, filepath: str):
                     seat_number=s_data["seat_id"],
                     position_x=s_data["position"][0],
                     position_y=s_data["position"][1],
+                    angle=s_data.get("angle", 0.0),
                     occupied=s_data["occupied"],
                     detected_by="auto",      # ← stamped by pipeline
                 )
@@ -179,8 +192,11 @@ def process_map_background(task_id: str, filepath: str):
         progress_store[task_id] = {
             "progress": 100, "message": "Done!", "done": True, "error": False
         }
-        # Notify clients about the new map
-        asyncio.run_coroutine_threadsafe(broadcast_layout_update(), asyncio.get_event_loop())
+        # Notify clients about the new map (Thread-safe)
+        if main_loop:
+            main_loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(broadcast_layout_update())
+            )
     except Exception as e:
         progress_store[task_id] = {
             "progress": 100, "message": f"Error: {str(e)}", "done": True, "error": True
@@ -239,12 +255,14 @@ def get_layout(db: Session = Depends(get_db)):
             "contour": {
                 "x": t.contour_x, "y": t.contour_y,
                 "w": t.contour_w, "h": t.contour_h,
+                "angle": t.angle or 0.0,
             },
             "detected_by": t.detected_by or "auto",
             "seats": [
                 {
                     "id": s.id,
                     "position": [s.position_x, s.position_y],
+                    "angle": s.angle or 0.0,
                     "occupied": s.occupied,
                     "detected_by": s.detected_by or "auto",
                 }

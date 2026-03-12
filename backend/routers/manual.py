@@ -35,6 +35,7 @@ from ws_manager import broadcast_layout_update
 class AddSeatRequest(BaseModel):
     x: int
     y: int
+    angle: Optional[float] = 0.0
     table_id: Optional[int] = None   # if omitted, nearest table is used
 
 
@@ -53,6 +54,7 @@ class AddTableRequest(BaseModel):
     y: int
     w: int
     h: int
+    angle: Optional[float] = 0.0
 
 
 class RemoveTableRequest(BaseModel):
@@ -107,6 +109,7 @@ async def add_seat(req: AddSeatRequest, db: Session = Depends(get_db)):
         seat_number=_next_seat_number(db, table.id),
         position_x=req.x,
         position_y=req.y,
+        angle=req.angle or 0.0,
         occupied=False,
         detected_by="manual",
     )
@@ -184,6 +187,7 @@ async def add_table(req: AddTableRequest, db: Session = Depends(get_db)):
         contour_y=req.y,
         contour_w=req.w,
         contour_h=req.h,
+        angle=req.angle or 0.0,
         detected_by="manual",
     )
     db.add(table)
@@ -193,7 +197,7 @@ async def add_table(req: AddTableRequest, db: Session = Depends(get_db)):
     return {
         "id": table.id,
         "table_number": table.table_number,
-        "contour": {"x": req.x, "y": req.y, "w": req.w, "h": req.h},
+        "contour": {"x": req.x, "y": req.y, "w": req.w, "h": req.h, "angle": table.angle},
         "detected_by": "manual",
     }
 
