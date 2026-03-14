@@ -10,6 +10,18 @@ const MANUAL_COLOR = '#3b82f6'; // blue-500   — manually added/edited
 const OVERRIDE_COLOR = '#f59e0b'; // amber-500  — number overridden
 const TABLE_AREA_ALPHA = 0.08;     // fill opacity for table rect
 
+// ─── Visual Components ───────────────────────────────────────────────────────
+const MoveBtn = ({ icon, onClick }) => (
+    <button onClick={onClick} style={{
+        width: '32px', height: '32px', background: '#fff', border: '1px solid #fcd34d',
+        borderRadius: '6px', fontSize: '14px', cursor: 'pointer', display: 'flex',
+        alignItems: 'center', justifyContent: 'center', color: '#b45309', fontWeight: 'bold',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+    }}>
+        {icon}
+    </button>
+);
+
 // ─── Tool definitions ────────────────────────────────────────────────────────
 const TOOLS = [
     { id: 'addSeat', label: '+ Aggiungi posto', icon: '🪑', hint: 'Click on the map to place a new seat' },
@@ -17,6 +29,7 @@ const TOOLS = [
     { id: 'addTable', label: '+ Aggiungi tavolo', icon: '⬜', hint: 'Drag to draw a new table region' },
     { id: 'removeTable', label: '✕ Rimuovi tavolo', icon: '🗑', hint: 'Click inside a table to delete it' },
     { id: 'editNumber', label: '✎ Modifica numero', icon: '🔢', hint: 'Click a table label to rename it' },
+    { id: 'move', label: '✥ Sposta', icon: '↔', hint: 'Select a manual element (blue) to move it' },
 ];
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -69,6 +82,12 @@ function App() {
     // Add-table draw state
     const drawStart = useRef(null);   // { imgX, imgY } when mouse down
     const drawRect = useRef(null);   // { x, y, w, h } current preview
+
+    // Pending shape (before confirm)
+    const [pendingShape, setPendingShape] = useState(null);
+    // { type: 'table'|'seat', x, y, w, h, angle }
+    const pendingShapeRef = useRef(null);
+    useEffect(() => { pendingShapeRef.current = pendingShape; }, [pendingShape]);
 
     const canvasRef = useRef(null);
     const imgRef = useRef(null);
@@ -228,6 +247,9 @@ function App() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         for (const table of tablesRef.current) {
+            // Hide the table if it's currently being moved in pendingShape
+            if (pendingShapeRef.current?.id === table.id && pendingShapeRef.current?.type === 'table') continue;
+
             const { x, y, w, h, angle } = table.contour;
             const isManual = table.detected_by === 'manual';
             const isOverride = table.number_overridden;
@@ -258,7 +280,7 @@ function App() {
             ctx.font = `bold ${fontSize}px Inter, sans-serif`;
             const tw2 = ctx.measureText(labelText).width;
             ctx.fillStyle = isManual ? MANUAL_COLOR : (isOverride ? OVERRIDE_COLOR : AUTO_COLOR);
-            ctx.fillText(labelText, -tw2/2, -(h * scaleY)/2 - 6);
+            ctx.fillText(labelText, -tw2 / 2, -(h * scaleY) / 2 - 6);
             ctx.restore();
 
             // Seats
@@ -290,7 +312,7 @@ function App() {
             }
         }
 
-        // Draw add-table preview rect
+        // Draw add-table drag preview (before mouse-up)
         if (drawRect.current) {
             const { x, y, w, h } = drawRect.current;
             ctx.save();
@@ -302,9 +324,32 @@ function App() {
             ctx.fillRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
             ctx.restore();
         }
+
+        // Draw pending shape with applied angle
+        const ps = pendingShapeRef.current;
+        if (ps) {
+            const { x, y, w, h, angle } = ps;
+            const rad = (angle * Math.PI) / 180;
+            ctx.save();
+            ctx.translate(x * scaleX, y * scaleY);
+            ctx.rotate(rad);
+            ctx.strokeStyle = '#f59e0b';
+            ctx.lineWidth = 2.5;
+            ctx.setLineDash([8, 4]);
+            ctx.fillStyle = 'rgba(245,158,11,0.12)';
+            if (ps.type === 'table') {
+                ctx.strokeRect(-(w * scaleX) / 2, -(h * scaleY) / 2, w * scaleX, h * scaleY);
+                ctx.fillRect(-(w * scaleX) / 2, -(h * scaleY) / 2, w * scaleX, h * scaleY);
+            } else {
+                const half = Math.max(5, 7 * Math.min(scaleX, scaleY)) * (w / 20);
+                ctx.strokeRect(-half, -half, half * 2, half * 2);
+                ctx.fillRect(-half, -half, half * 2, half * 2);
+            }
+            ctx.restore();
+        }
     }, []);
 
-    useEffect(() => { drawCanvas(); }, [tables, mapData, drawCanvas]);
+    useEffect(() => { drawCanvas(); }, [tables, mapData, drawCanvas, pendingShape]);
     useEffect(() => {
         const id = setTimeout(drawCanvas, 30);
         return () => clearTimeout(id);
@@ -335,7 +380,7 @@ function App() {
             const sin = Math.sin(-angle * Math.PI / 180);
             const localX = dx * cos - dy * sin;
             const localY = dx * sin + dy * cos;
-            
+
             if (Math.abs(localX) <= w / 2 && Math.abs(localY) <= h / 2) return table;
         }
         return null;
@@ -428,13 +473,8 @@ function App() {
         if (activeToolRef.current === 'addTable' && drawStart.current && drawRect.current) {
             const { x, y, w, h } = drawRect.current;
             if (w > 10 && h > 10) {
-                try {
-                    await api('/manual/add-table', {
-                        x: Math.round(x), y: Math.round(y),
-                        w: Math.round(w), h: Math.round(h),
-                    });
-                    await fetchAll();
-                } catch (err) { setMessage('Add table failed: ' + err.message); }
+                // Set pending shape instead of immediately saving
+                setPendingShape({ type: 'table', x: Math.round(x + w / 2), y: Math.round(y + h / 2), w: Math.round(w), h: Math.round(h), angle: 0 });
             }
             drawStart.current = null;
             drawRect.current = null;
@@ -507,10 +547,8 @@ function App() {
 
         // ── Edit-mode tools ─────────────────────────────────────────────
         if (tool === 'addSeat') {
-            try {
-                await api('/manual/add-seat', { x: Math.round(imgX), y: Math.round(imgY) });
-                await fetchAll();
-            } catch (err) { setMessage('Add seat failed: ' + err.message); }
+            // Set pending shape instead of immediately saving
+            setPendingShape({ type: 'seat', x: Math.round(imgX), y: Math.round(imgY), w: 20, h: 20, angle: 0 });
 
         } else if (tool === 'removeSeat') {
             const seat = hitSeat(imgX, imgY);
@@ -534,6 +572,29 @@ function App() {
             if (!table) { setMessage('Click inside a table to edit its number.'); return; }
             setEditingTableId(table.id);
             setEditNumberValue(String(table.table_number));
+
+        } else if (tool === 'move') {
+            // Try hit seat first (higher priority)
+            const seat = hitSeat(imgX, imgY);
+            if (seat && seat.detected_by === 'manual') {
+                setPendingShape({
+                    type: 'seat', id: seat.id,
+                    x: seat.position[0], y: seat.position[1],
+                    w: 20, h: 20, angle: seat.angle || 0
+                });
+                return;
+            }
+            // Then hit table
+            const table = hitTable(imgX, imgY);
+            if (table && table.detected_by === 'manual') {
+                const { x, y, w, h, angle } = table.contour;
+                setPendingShape({
+                    type: 'table', id: table.id,
+                    x, y, w, h, angle
+                });
+            } else {
+                setMessage('Click a manual (blue) element to move it.');
+            }
         }
     }, [toggleSeat, api, fetchAll]);
 
@@ -550,6 +611,33 @@ function App() {
         setEditingTableId(null);
         setEditNumberValue('');
     }, [editingTableId, editNumberValue, api, fetchAll]);
+
+    // ─── Pending shape handlers ─────────────────────────────────────────
+    const confirmPendingShape = useCallback(async () => {
+        const ps = pendingShapeRef.current;
+        if (!ps) return;
+        try {
+            if (ps.type === 'table') {
+                const endpoint = ps.id ? '/manual/move-table' : '/manual/add-table';
+                const body = ps.id
+                    ? { table_id: ps.id, x: ps.x, y: ps.y, w: ps.w, h: ps.h, angle: ps.angle }
+                    : { x: ps.x, y: ps.y, w: ps.w, h: ps.h, angle: ps.angle };
+                await api(endpoint, body);
+            } else {
+                const endpoint = ps.id ? '/manual/move-seat' : '/manual/add-seat';
+                const body = ps.id
+                    ? { seat_id: ps.id, x: ps.x, y: ps.y, angle: ps.angle }
+                    : { x: ps.x, y: ps.y, angle: ps.angle };
+                await api(endpoint, body);
+            }
+            await fetchAll();
+            setPendingShape(null);
+        } catch (err) { setMessage('Save failed: ' + err.message); }
+    }, [api, fetchAll]);
+
+    const cancelPendingShape = useCallback(() => {
+        setPendingShape(null);
+    }, []);
 
     // ─── Zoom / pan ──────────────────────────────────────────────────────
     const handleWheel = (e) => {
@@ -651,8 +739,8 @@ function App() {
                 order: isMobile ? 2 : 1
             }}>
                 <div>
-                    <div style={{ fontSize: '20px', fontWeight: 700, color: '#0f172a' }}>Seat Mapper</div>
-                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>Seat assignment manager</div>
+                    <div style={{ fontSize: '20px', fontWeight: 700, color: '#0f172a' }}>Seat Mapper Mexico&Nuvole</div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>Gestione posti a sedere</div>
                 </div>
 
                 {/* Stats */}
@@ -792,6 +880,90 @@ function App() {
                         </div>
                     </div>
                 </div>
+
+                {/* ── Shape Properties Panel (appears after adding a table/seat) ── */}
+                {pendingShape && (
+                    <div style={{
+                        background: '#fffbeb', border: '2px solid #f59e0b',
+                        borderRadius: '10px', padding: '12px',
+                    }}>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: '#b45309', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '10px' }}>
+                            🔧 {pendingShape.id ? (pendingShape.type === 'table' ? 'Sposta Tavolo' : 'Sposta Posto') : (pendingShape.type === 'table' ? 'Nuovo Tavolo' : 'Nuovo Posto')} — {pendingShape.id ? 'Modifica' : 'Proprietà'}
+                        </div>
+
+                        {/* Movement Controls (User requested Up/Down/Left/Right) */}
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: '#78350f', marginBottom: '6px' }}>
+                            Posizione (Sposta)
+                        </label>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px', marginBottom: '15px', width: 'fit-content', margin: '0 auto 15px' }}>
+                            <div />
+                            <MoveBtn icon="▲" onClick={() => setPendingShape(ps => ({ ...ps, y: ps.y - 5 }))} />
+                            <div />
+                            <MoveBtn icon="◀" onClick={() => setPendingShape(ps => ({ ...ps, x: ps.x - 5 }))} />
+                            <div />
+                            <MoveBtn icon="▶" onClick={() => setPendingShape(ps => ({ ...ps, x: ps.x + 5 }))} />
+                            <div />
+                            <MoveBtn icon="▼" onClick={() => setPendingShape(ps => ({ ...ps, y: ps.y + 5 }))} />
+                            <div />
+                        </div>
+
+                        {/* Width / Height for tables */}
+                        {pendingShape.type === 'table' && <>
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: '#78350f', marginBottom: '8px' }}>
+                                Larghezza (px)
+                                <input type="number" min="5" max="2000" value={pendingShape.w}
+                                    onChange={e => setPendingShape(ps => ({ ...ps, w: Math.max(5, parseInt(e.target.value) || 5) }))}
+                                    style={{ display: 'block', width: '100%', marginTop: '3px', padding: '6px 8px', border: '1px solid #fcd34d', borderRadius: '6px', fontSize: '13px', outline: 'none', boxSizing: 'border-box', background: 'white' }}
+                                />
+                            </label>
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: '#78350f', marginBottom: '8px' }}>
+                                Altezza (px)
+                                <input type="number" min="5" max="2000" value={pendingShape.h}
+                                    onChange={e => setPendingShape(ps => ({ ...ps, h: Math.max(5, parseInt(e.target.value) || 5) }))}
+                                    style={{ display: 'block', width: '100%', marginTop: '3px', padding: '6px 8px', border: '1px solid #fcd34d', borderRadius: '6px', fontSize: '13px', outline: 'none', boxSizing: 'border-box', background: 'white' }}
+                                />
+                            </label>
+                        </>}
+
+                        {/* Size for seats */}
+                        {pendingShape.type === 'seat' && (
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: '#78350f', marginBottom: '8px' }}>
+                                Dimensione (px)
+                                <input type="number" min="5" max="200" value={pendingShape.w}
+                                    onChange={e => { const v = Math.max(5, parseInt(e.target.value) || 5); setPendingShape(ps => ({ ...ps, w: v, h: v })); }}
+                                    style={{ display: 'block', width: '100%', marginTop: '3px', padding: '6px 8px', border: '1px solid #fcd34d', borderRadius: '6px', fontSize: '13px', outline: 'none', boxSizing: 'border-box', background: 'white' }}
+                                />
+                            </label>
+                        )}
+
+                        {/* Angle slider + number */}
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: '#78350f', marginBottom: '4px' }}>
+                            Angolo: <strong>{pendingShape.angle}°</strong>
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                            <input type="range" min="-180" max="180" step="1" value={pendingShape.angle}
+                                onChange={e => setPendingShape(ps => ({ ...ps, angle: parseInt(e.target.value) }))}
+                                style={{ flex: 1, accentColor: '#f59e0b' }}
+                            />
+                            <input type="number" min="-180" max="180" value={pendingShape.angle}
+                                onChange={e => setPendingShape(ps => ({ ...ps, angle: parseInt(e.target.value) || 0 }))}
+                                style={{ width: '58px', padding: '5px 6px', border: '1px solid #fcd34d', borderRadius: '6px', fontSize: '12px', outline: 'none', background: 'white' }}
+                            />
+                        </div>
+
+                        {/* Confirm / Cancel */}
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button onClick={confirmPendingShape}
+                                style={{ flex: 1, background: '#d97706', color: 'white', border: 'none', borderRadius: '7px', padding: '9px', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>
+                                ✔ Conferma
+                            </button>
+                            <button onClick={cancelPendingShape}
+                                style={{ flex: 1, background: '#e2e8f0', color: '#475569', border: 'none', borderRadius: '7px', padding: '9px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>
+                                ✕ Annulla
+                            </button>
+                        </div>
+                    </div>
+                )}
 
                 {message && (
                     <div style={{ fontSize: '12px', color: '#475569', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px 10px' }}>

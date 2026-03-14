@@ -293,9 +293,23 @@ async def toggle_seat(seat_id: int, db: Session = Depends(get_db)):
     return {"id": seat.id, "occupied": seat.occupied}
 
 
+def _resolve_table_by_number(db: Session, table_number: int):
+    """Find a table by its *resolved* number (override takes priority)."""
+    # 1. Check if any table has been manually renamed to this number
+    override = (
+        db.query(models.TableNumberOverride)
+        .filter(models.TableNumberOverride.manual_number == table_number)
+        .first()
+    )
+    if override:
+        return db.query(models.Table).filter(models.Table.id == override.table_id).first()
+    # 2. Fall back to the original OCR/auto number
+    return db.query(models.Table).filter(models.Table.table_number == table_number).first()
+
+
 @app.post("/table/{table_number}/add-seats")
 async def add_seats(table_number: int, amount: int = Form(...), db: Session = Depends(get_db)):
-    table = db.query(models.Table).filter(models.Table.table_number == table_number).first()
+    table = _resolve_table_by_number(db, table_number)
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
     free_seats = (
@@ -313,7 +327,7 @@ async def add_seats(table_number: int, amount: int = Form(...), db: Session = De
 
 @app.post("/table/{table_number}/remove-seats")
 async def remove_seats(table_number: int, amount: int = Form(...), db: Session = Depends(get_db)):
-    table = db.query(models.Table).filter(models.Table.table_number == table_number).first()
+    table = _resolve_table_by_number(db, table_number)
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
     occupied_seats = (

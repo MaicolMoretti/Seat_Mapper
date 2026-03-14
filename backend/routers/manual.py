@@ -47,6 +47,7 @@ class MoveSeatRequest(BaseModel):
     seat_id: int
     x: int
     y: int
+    angle: Optional[float] = 0.0
 
 
 class AddTableRequest(BaseModel):
@@ -59,6 +60,15 @@ class AddTableRequest(BaseModel):
 
 class RemoveTableRequest(BaseModel):
     table_id: int
+
+
+class MoveTableRequest(BaseModel):
+    table_id: int
+    x: int
+    y: int
+    w: Optional[int] = None
+    h: Optional[int] = None
+    angle: Optional[float] = None
 
 
 class UpdateTableNumberRequest(BaseModel):
@@ -156,10 +166,12 @@ async def move_seat(req: MoveSeatRequest, db: Session = Depends(get_db)):
     })
     seat.position_x = req.x
     seat.position_y = req.y
+    if req.angle is not None:
+        seat.angle = req.angle
     seat.detected_by = "manual"
     db.commit()
     await broadcast_layout_update()
-    return {"id": seat.id, "x": seat.position_x, "y": seat.position_y}
+    return {"id": seat.id, "x": seat.position_x, "y": seat.position_y, "angle": seat.angle}
 
 
 # ─── Table endpoints ──────────────────────────────────────────────────────────
@@ -211,6 +223,27 @@ async def remove_table(req: RemoveTableRequest, db: Session = Depends(get_db)):
     db.commit()
     await broadcast_layout_update()
     return {"deleted": req.table_id}
+
+
+@router.post("/move-table", dependencies=[Depends(require_desktop)])
+async def move_table(req: MoveTableRequest, db: Session = Depends(get_db)):
+    table = db.query(models.Table).filter(models.Table.id == req.table_id).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+        
+    _log_action(db, "MOVE_TABLE", table.id, {
+        "x": table.contour_x,
+        "y": table.contour_y
+    })
+    table.contour_x = req.x
+    table.contour_y = req.y
+    if req.w is not None: table.contour_w = req.w
+    if req.h is not None: table.contour_h = req.h
+    if req.angle is not None: table.angle = req.angle
+    table.detected_by = "manual"
+    db.commit()
+    await broadcast_layout_update()
+    return {"id": table.id, "x": table.contour_x, "y": table.contour_y}
 
 
 # ─── Table-number override endpoint ──────────────────────────────────────────
@@ -266,6 +299,12 @@ async def undo(db: Session = Depends(get_db)):
             if seat:
                 seat.position_x = state["x"]
                 seat.position_y = state["y"]
+                
+        elif last_log.action_type == "MOVE_TABLE":
+            table = db.query(models.Table).filter(models.Table.id == last_log.target_id).first()
+            if table:
+                table.contour_x = state["x"]
+                table.contour_y = state["y"]
         
         elif last_log.action_type == "TOGGLE_OCCUPANCY":
             seat = db.query(models.Seat).filter(models.Seat.id == last_log.target_id).first()

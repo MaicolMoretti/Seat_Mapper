@@ -27,11 +27,16 @@ project-root/
 
 ## Features
 
-- **Automatic Map Processing**: Detects rectangular tables, square seats, and numbered markers.
+- **Advanced Map Processing**: Detects rectangular tables and associated nested seats using geometric hierarchy. Handles high-resolution maps with ease.
+- **Manual Editing Suite**: Full support for adding, removing, and modifying tables and seats manually.
+- **Precision Controls**: Adjust width, height, and rotation (0-360°) for any manually added element.
+- **Movement Tools**: Select and move manual elements using on-screen directional controls for pixel-perfect alignment.
+- **Table Number Overrides**: Rename any table directly on the map; the system automatically resolves connections for bulk actions.
 - **Seat Management**: Click on seats in the map to toggle Occupied/Free state.
 - **Control Panel**: Add or Remove occupants in bulk per table.
 - **Real-Time Statistics**: Live counters of free vs occupied seats.
-- **Data Persistence**: Reloads map and states automatically upon restarting backend via SQLite database.
+- **Undo System**: Supports undoing manual actions (`Ctrl+Z`).
+- **Data Persistence**: Automatic SQLite storage of raw detections and manual overrides.
 
 ## Architecture
 
