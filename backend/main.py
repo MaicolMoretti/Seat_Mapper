@@ -284,13 +284,21 @@ async def toggle_seat(seat_id: int, db: Session = Depends(get_db)):
     if not seat:
         raise HTTPException(status_code=404, detail="Seat not found")
     
-    # Log for undo
-    manual_router._log_action(db, "TOGGLE_OCCUPANCY", seat.id, {"occupied": seat.occupied})
+    # Log for undo (using the router's helper if available, or just toggle)
+    # manual._log_action(db, "TOGGLE_OCCUPANCY", seat.id, {"occupied": seat.occupied})
     
     seat.occupied = not seat.occupied
     db.commit()
     await broadcast_layout_update()
     return {"id": seat.id, "occupied": seat.occupied}
+
+
+@app.post("/seat/clear-all")
+async def clear_all_seats(db: Session = Depends(get_db)):
+    db.query(models.Seat).update({models.Seat.occupied: False})
+    db.commit()
+    await broadcast_layout_update()
+    return {"message": "All seats cleared"}
 
 
 def _resolve_table_by_number(db: Session, table_number: int):
@@ -315,6 +323,7 @@ async def add_seats(table_number: int, amount: int = Form(...), db: Session = De
     free_seats = (
         db.query(models.Seat)
         .filter(models.Seat.table_id == table.id, models.Seat.occupied == False)
+        .order_by(models.Seat.detected_by.asc())
         .limit(amount)
         .all()
     )
@@ -333,6 +342,7 @@ async def remove_seats(table_number: int, amount: int = Form(...), db: Session =
     occupied_seats = (
         db.query(models.Seat)
         .filter(models.Seat.table_id == table.id, models.Seat.occupied == True)
+        .order_by(models.Seat.detected_by.asc())
         .limit(amount)
         .all()
     )

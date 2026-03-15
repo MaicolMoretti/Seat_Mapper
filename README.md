@@ -33,7 +33,9 @@ project-root/
 - **Movement Tools**: Select and move manual elements using on-screen directional controls for pixel-perfect alignment.
 - **Table Number Overrides**: Rename any table directly on the map; the system automatically resolves connections for bulk actions.
 - **Seat Management**: Click on seats in the map to toggle Occupied/Free state.
-- **Control Panel**: Add or Remove occupants in bulk per table.
+- **Control Panel**: Add or Remove occupants in bulk per table. The logic is now **additive**, meaning your batch commands build upon whatever is already manually selected.
+- **Clear All Seats**: A dedicated "Clear All" button (with safety confirmation) to quickly reset the entire map's occupancy.
+- **Improved Navigation**: Focal-point zooming allows you to zoom directly into your mouse cursor (PC) or the pinch-point between your fingers (Mobile/Tablet), preventing map drift.
 - **Real-Time Statistics**: Live counters of free vs occupied seats.
 - **Undo System**: Supports undoing manual actions (`Ctrl+Z`).
 - **Data Persistence**: Automatic SQLite storage of raw detections and manual overrides.

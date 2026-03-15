@@ -505,13 +505,30 @@ function App() {
             setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
             lastTouch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         } else if (e.touches.length === 2 && touchStartDist.current) {
-            const dist = Math.hypot(
-                e.touches[0].clientX - e.touches[1].clientX,
-                e.touches[0].clientY - e.touches[1].clientY
-            );
+            const touch1 = e.touches[0];
+            const touch2 = e.touches[1];
+            const dist = Math.hypot(touch1.clientX - touch2.clientX, touch1.clientY - touch2.clientY);
+            
             const ratio = dist / touchStartDist.current;
-            const nextScale = Math.min(Math.max(0.1, touchStartScale.current * ratio), 5);
-            setScale(nextScale);
+            const newScale = Math.min(Math.max(0.1, touchStartScale.current * ratio), 12);
+            
+            // Focal point zoom for pinch
+            const midX = (touch1.clientX + touch2.clientX) / 2;
+            const midY = (touch1.clientY + touch2.clientY) / 2;
+            
+            const viewport = e.currentTarget.getBoundingClientRect();
+            const px = midX - viewport.left;
+            const py = midY - viewport.top;
+
+            setOffset(oldOffset => {
+                const sOld = scale;
+                const sNew = newScale;
+                return {
+                    x: px - (px - oldOffset.x) * (sNew / sOld),
+                    y: py - (py - oldOffset.y) * (sNew / sOld)
+                };
+            });
+            setScale(newScale);
         }
     };
 
@@ -520,8 +537,44 @@ function App() {
         touchStartDist.current = null;
     };
 
-    const zoomIn = () => setScale(prev => Math.min(prev * 1.2, 5));
-    const zoomOut = () => setScale(prev => Math.max(prev / 1.2, 0.1));
+    const performZoom = (factor, centerX, centerY) => {
+        const sOld = scale;
+        const sNew = Math.min(Math.max(0.1, sOld * factor), 12);
+        
+        let fx = centerX;
+        let fy = centerY;
+
+        if (fx === undefined || fy === undefined) {
+            const viewport = canvasRef.current?.parentElement?.getBoundingClientRect();
+            if (viewport) {
+                fx = viewport.width / 2;
+                fy = viewport.height / 2;
+            } else {
+                fx = 0; fy = 0;
+            }
+        }
+
+        setOffset(old => ({
+            x: fx - (fx - old.x) * (sNew / sOld),
+            y: fy - (fy - old.y) * (sNew / sOld)
+        }));
+        setScale(sNew);
+    };
+
+    const zoomIn = () => performZoom(1.2);
+    const zoomOut = () => performZoom(1 / 1.2);
+
+    const centerImage = useCallback(() => {
+        const img = imgRef.current;
+        const container = document.querySelector('.viewport-container');
+        if (!img || !container) return;
+        const vw = container.clientWidth;
+        const vh = container.clientHeight;
+        const iw = img.offsetWidth;
+        const ih = img.offsetHeight;
+        setOffset({ x: (vw - iw) / 2, y: (vh - ih) / 2 });
+        setScale(1);
+    }, []);
 
     const handleCanvasClick = useCallback(async (e) => {
         if (hasDragged.current) return;
@@ -642,8 +695,21 @@ function App() {
     // ─── Zoom / pan ──────────────────────────────────────────────────────
     const handleWheel = (e) => {
         e.preventDefault();
-        const delta = e.deltaY < 0 ? 0.12 : -0.12;
-        setScale(z => Math.min(Math.max(0.15, z + delta), 12));
+        const factor = e.deltaY < 0 ? 1.15 : 0.85;
+        const viewport = e.currentTarget.getBoundingClientRect();
+        performZoom(factor, e.clientX - viewport.left, e.clientY - viewport.top);
+    };
+
+    const clearAll = async () => {
+        if (!window.confirm("eliminare tutti i posti a sedere? --> si o no")) return;
+        try {
+            await api('/seat/clear-all');
+            await fetchAll();
+            setMessage("Tutti i posti sono stati liberati.");
+            setTimeout(() => setMessage(''), 3000);
+        } catch (err) {
+            setMessage("Errore nel reset: " + err.message);
+        }
     };
 
     // ─── Control panel ───────────────────────────────────────────────────
@@ -846,8 +912,20 @@ function App() {
 
                 {/* Control panel */}
                 <div>
-                    <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
-                        Table Control
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                            Table Control
+                        </div>
+                        <button onClick={clearAll}
+                            style={{
+                                background: 'transparent', color: '#ef4444', border: '1px solid #fee2e2',
+                                borderRadius: '4px', padding: '2px 8px', fontSize: '10px', fontWeight: 700,
+                                cursor: 'pointer', textTransform: 'uppercase', transition: 'all 0.2s'
+                            }}
+                            onMouseOver={e => e.currentTarget.style.background = '#fef2f2'}
+                            onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
+                            Clear All
+                        </button>
                     </div>
                     <div style={{
                         background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px',
@@ -994,6 +1072,7 @@ function App() {
 
             {/* ── Map viewport ─────────────────────────────────────────── */}
             <div
+                className="viewport-container"
                 style={{
                     flex: 1, position: 'relative', overflow: 'hidden', background: '#e2e8f0',
                     cursor: isPanning.current ? 'grabbing' : (editMode && activeTool ? canvasCursor() : 'grab'),
@@ -1034,14 +1113,24 @@ function App() {
                 )}
 
                 {/* Zoom controls */}
-                <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 20, display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    {[{ label: '+', action: zoomIn }, { label: '⟳', action: () => { setScale(1); setOffset({ x: 0, y: 0 }); } }, { label: '−', action: zoomOut }].map(btn => (
+                <div style={{ 
+                    position: 'absolute', 
+                    top: isMobile ? '80px' : '12px',  // Shift down on mobile/tablet to avoid collision
+                    right: '12px', 
+                    zIndex: 20, 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '4px' 
+                }}>
+                    {[{ label: '+', action: zoomIn }, { label: '⟳', action: centerImage }, { label: '−', action: zoomOut }].map(btn => (
                         <button key={btn.label}
                             onClick={btn.action}
                             style={{
-                                width: '32px', height: '32px', background: 'white', border: '1px solid #e2e8f0',
-                                borderRadius: '6px', fontSize: '16px', cursor: 'pointer',
-                                boxShadow: '0 1px 4px rgba(0,0,0,.1)', lineHeight: '1'
+                                width: '40px', height: '40px', // Slightly larger for better touch surface
+                                background: 'white', border: '1px solid #e2e8f0',
+                                borderRadius: '8px', fontSize: '18px', cursor: 'pointer',
+                                boxShadow: '0 2px 6px rgba(0,0,0,.15)', lineHeight: '1',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center'
                             }}>
                             {btn.label}
                         </button>
@@ -1051,7 +1140,6 @@ function App() {
                 {mapData ? (
                     <div style={{
                         position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
                         pointerEvents: 'none',
                     }}>
                         {/* Visual canvas */}
@@ -1068,7 +1156,7 @@ function App() {
                                 src={`${API_BASE}${mapData.url}`}
                                 alt="Map"
                                 draggable={false}
-                                onLoad={drawCanvas}
+                                onLoad={(e) => { drawCanvas(); centerImage(); }}
                                 style={{
                                     display: 'block', maxWidth: '85vw', maxHeight: '85vh',
                                     userSelect: 'none', borderRadius: '8px', background: 'white',
