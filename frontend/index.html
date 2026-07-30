@@ -20,7 +20,26 @@
 </head>
 <body class="h-screen flex flex-col overflow-hidden text-slate-800">
     <div id="root" class="flex-1 flex flex-col"></div>
-    <!-- Load our React App -->
-    <script type="text/babel" src="/frontend/app.js"></script>
+    <!-- Load our React App (with ngrok bypass) -->
+    <script>
+        fetch('/frontend/app.js', {
+            headers: { 'ngrok-skip-browser-warning': 'true' }
+        })
+        .then(res => res.text())
+        .then(code => {
+            if (window.Babel) {
+                // Programmatic compilation bypasses script-tag injection issues
+                // Use classic runtime to avoid Babel generating 'import' statements for JSX
+                const transformed = window.Babel.transform(code, { presets: [['react', { runtime: 'classic' }]] }).code;
+                const script = document.createElement('script');
+                script.type = 'text/javascript';
+                script.textContent = transformed;
+                document.body.appendChild(script);
+            } else {
+                console.error("Babel is not loaded!");
+            }
+        })
+        .catch(err => console.error("Error loading app.js:", err));
+    </script>
 </body>
 </html>

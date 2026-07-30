@@ -34,16 +34,20 @@ def _ocr_circle_number(gray, cx, cy, radius):
     roi = gray[y1:y2, x1:x2]
     if roi.size == 0:
         return None
-    roi_up = cv2.resize(roi, (roi.shape[1] * 4, roi.shape[0] * 4), interpolation=cv2.INTER_CUBIC)
-    _, roi_thresh = cv2.threshold(roi_up, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    for psm in [10, 8, 7, 6]:
-        cfg = f'--psm {psm} -c tessedit_char_whitelist=0123456789'
-        txt = pytesseract.image_to_string(roi_thresh, config=cfg).strip()
-        txt = ''.join(c for c in txt if c.isdigit())
-        if txt:
+    roi_up = cv2.resize(roi, (roi.shape[1] * 3, roi.shape[0] * 3), interpolation=cv2.INTER_CUBIC)
+    _, thresh_inv = cv2.threshold(roi_up, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    thresh_norm = 255 - thresh_inv
+    for img_variant in [thresh_inv, thresh_norm]:
+        for psm in [7, 10]:
+            cfg = f'--psm {psm} -c tessedit_char_whitelist=0123456789'
             try:
-                return int(txt)
-            except ValueError:
+                txt = pytesseract.image_to_string(img_variant, config=cfg).strip()
+                txt = ''.join(c for c in txt if c.isdigit())
+                if txt and len(txt) <= 3:
+                    val = int(txt)
+                    if 1 <= val <= 200:
+                        return val
+            except Exception:
                 pass
     return None
 
@@ -72,22 +76,19 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
     total_contours = len(contours)
     _prog(15, f"Analyzing {total_contours} shapes using hierarchy...")
 
-    # PASS 1: Find tables (outer contours) and circles
+    # PASS 1: Find tables and circles
     for i, cnt in enumerate(contours):
         area = cv2.contourArea(cnt)
-        if area < 100 or area > total_px * 0.40:
+        if area < 50 or area > total_px * 0.40:
             continue
             
-        parent_idx = hierarchy[0][i][3]
+        peri = cv2.arcLength(cnt, True)
+        circ = _circularity(area, peri)
         
-        # Outer contours (parent == -1)
-        if parent_idx == -1:
-            peri = cv2.arcLength(cnt, True)
-            circ = _circularity(area, peri)
-            
-            # Circles
-            if circ > 0.70 and area > 100:
-                x, y, w, h = cv2.boundingRect(cnt)
+        # Circles
+        if circ > 0.72 and 150 <= area <= 3000:
+            x, y, w, h = cv2.boundingRect(cnt)
+            if 0.8 <= w / max(h, 1) <= 1.25:
                 cx_c, cy_c = x + w // 2, y + h // 2
                 radius = max(w, h) // 2
                 num = _ocr_circle_number(gray, cx_c, cy_c, radius)
@@ -96,20 +97,20 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
                     "radius": radius,
                     "number": num
                 })
-            # Tables (large rectangles, 3000 to 500,000 px)
-            elif 3000 <= area <= 500000:
-                rect = cv2.minAreaRect(cnt)
-                (cx, cy), (rw, rh), angle = rect
-                if rw < rh:
-                    angle = angle - 90
-                    rw, rh = rh, rw
-                    
-                tables[i] = {
-                    "bbox": (cx, cy, rw, rh, angle),
-                    "center": (cx, cy),
-                    "seats": [],
-                    "table_id": None
-                }
+        # Tables (rectangles from 800 to 500,000 px)
+        elif 800 <= area <= 500000 and circ < 0.85:
+            rect = cv2.minAreaRect(cnt)
+            (cx, cy), (rw, rh), angle = rect
+            if rw < rh:
+                angle = angle - 90
+                rw, rh = rh, rw
+                
+            tables[i] = {
+                "bbox": (cx, cy, rw, rh, angle),
+                "center": (cx, cy),
+                "seats": [],
+                "table_id": None
+            }
 
     # PASS 2: Find seats (inner contours)
     for i, cnt in enumerate(contours):
@@ -118,8 +119,8 @@ def detect_tables_and_seats(image_path: str, progress_callback=None):
         
         # Inner contours that belong to a known table
         if parent_idx != -1 and parent_idx in tables:
-            # Seats should be small rectangles, usually 500 - 3000 px, but we accept 50 to 5000
-            if 50 <= area <= 5000:
+            # Seats should be small rectangles, usually 30 to 5000 px
+            if 30 <= area <= 5000:
                 rect = cv2.minAreaRect(cnt)
                 (cx, cy), (rw, rh), angle = rect
                 if rw < rh:

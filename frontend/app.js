@@ -198,6 +198,20 @@ function App() {
 
     // ─── Seat toggle ────────────────────────────────────────────────────
     const toggleSeat = useCallback(async (seatId) => {
+        // ── Capacity check: warn if table is already full ──
+        const parentTable = tablesRef.current.find(t => t.seats.some(s => s.id === seatId));
+        const seat = parentTable?.seats.find(s => s.id === seatId);
+        if (parentTable && seat && !seat.occupied) {
+            // The user is trying to mark this seat as occupied
+            const totalSeats = parentTable.seats.length;
+            const occupiedSeats = parentTable.seats.filter(s => s.occupied).length;
+            if (occupiedSeats >= totalSeats) {
+                setMessage(`⚠️ Il tavolo T${parentTable.table_number} ha raggiunto la capienza massima di ${totalSeats} posti. Non è possibile aggiungere altre persone.`);
+                setTimeout(() => setMessage(''), 5000);
+                return; // Block the action
+            }
+        }
+
         setTables(prev => prev.map(t => ({
             ...t,
             seats: t.seats.map(s => s.id === seatId ? { ...s, occupied: !s.occupied } : s)
@@ -246,6 +260,9 @@ function App() {
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+        const counts = {};
+        tablesRef.current.forEach(t => { counts[t.table_number] = (counts[t.table_number] || 0) + 1; });
+
         for (const table of tablesRef.current) {
             // Hide the table if it's currently being moved in pendingShape
             if (pendingShapeRef.current?.id === table.id && pendingShapeRef.current?.type === 'table') continue;
@@ -253,16 +270,17 @@ function App() {
             const { x, y, w, h, angle } = table.contour;
             const isManual = table.detected_by === 'manual';
             const isOverride = table.number_overridden;
-            const tableColor = isManual ? MANUAL_COLOR : AUTO_COLOR;
+            const isDuplicate = counts[table.table_number] > 1;
+            const tableColor = isDuplicate ? '#ef4444' : (isManual ? MANUAL_COLOR : AUTO_COLOR);
 
             ctx.save();
             ctx.translate(x * scaleX, y * scaleY);
             ctx.rotate((angle * Math.PI) / 180);
 
             // Table bounding box fill
-            ctx.fillStyle = isManual
-                ? 'rgba(59,130,246,0.06)'
-                : 'rgba(34,197,94,0.06)';
+            ctx.fillStyle = isDuplicate 
+                ? 'rgba(239,68,68,0.15)'
+                : (isManual ? 'rgba(59,130,246,0.06)' : 'rgba(34,197,94,0.06)');
             ctx.fillRect(- (w * scaleX) / 2, - (h * scaleY) / 2, w * scaleX, h * scaleY);
 
             // Table bounding box stroke
@@ -270,6 +288,13 @@ function App() {
             ctx.lineWidth = isManual ? 2.5 : 1.5;
             ctx.setLineDash(isManual ? [6, 3] : []);
             ctx.strokeRect(- (w * scaleX) / 2, - (h * scaleY) / 2, w * scaleX, h * scaleY);
+            
+            if (isDuplicate) {
+                ctx.fillStyle = '#ef4444';
+                ctx.font = `bold ${Math.max(14, 16 * scaleX)}px sans-serif`;
+                ctx.fillText("⚠️", - (w * scaleX) / 2 - 12, - (h * scaleY) / 2 - 4);
+            }
+            
             ctx.restore();
 
             // Table label
@@ -285,7 +310,11 @@ function App() {
 
             // Seats
             for (const seat of table.seats) {
-                const [sx, sy] = seat.position;
+                let [sx, sy] = seat.position || [0, 0];
+                if (typeof sx === 'string') sx = parseFloat(sx);
+                if (typeof sy === 'string') sy = parseFloat(sy);
+                if (isNaN(sx)) sx = 0;
+                if (isNaN(sy)) sy = 0;
                 const sAngle = seat.angle || 0;
                 const px = sx * scaleX;
                 const py = sy * scaleY;
@@ -656,6 +685,14 @@ function App() {
         if (editingTableId === null) return;
         const n = parseInt(editNumberValue, 10);
         if (!isNaN(n) && n > 0) {
+            const alreadyExists = tablesRef.current.some(t => t.id !== editingTableId && t.table_number === n);
+            if (alreadyExists) {
+                if (!window.confirm("Il numero del tavolo già esiste, procedere comunque?")) {
+                    setEditingTableId(null);
+                    setEditNumberValue('');
+                    return;
+                }
+            }
             try {
                 await api('/manual/update-table-number', { table_id: editingTableId, manual_number: n });
                 await fetchAll();
@@ -715,6 +752,28 @@ function App() {
     // ─── Control panel ───────────────────────────────────────────────────
     const callTableEndpoint = async (action) => {
         if (!selTable || !seatsAmount) return;
+
+        // ── Capacity check when marking seats as occupied ──
+        if (action === 'add-seats') {
+            const table = tablesRef.current.find(t => t.table_number === Number(selTable));
+            if (table) {
+                const totalSeats = table.seats.length;
+                const occupiedSeats = table.seats.filter(s => s.occupied).length;
+                const toAdd = Number(seatsAmount);
+                const newTotal = occupiedSeats + toAdd;
+                if (newTotal > totalSeats) {
+                    const available = totalSeats - occupiedSeats;
+                    setMessage(
+                        `⚠️ Il tavolo T${table.table_number} può contenere max ${totalSeats} persone. ` +
+                        `Attualmente ci sono ${occupiedSeats} posti occupati, ` +
+                        `quindi puoi aggiungerne al massimo ${available > 0 ? available : 0}.`
+                    );
+                    setTimeout(() => setMessage(''), 6000);
+                    return; // Block the action
+                }
+            }
+        }
+
         const fd = new URLSearchParams({ amount: seatsAmount });
         const res = await fetch(`${API_BASE}/table/${selTable}/${action}`, {
             method: 'POST', body: fd,
@@ -1111,6 +1170,24 @@ function App() {
                         ✏️ EDIT MODE{activeTool ? ` — ${TOOLS.find(t => t.id === activeTool)?.label.toUpperCase()}` : ' — select a tool'}
                     </div>
                 )}
+
+                {/* Duplicate tables banner */}
+                {(() => {
+                    const counts = {};
+                    tables.forEach(t => { counts[t.table_number] = (counts[t.table_number] || 0) + 1; });
+                    const dups = Object.keys(counts).filter(k => counts[k] > 1);
+                    if (dups.length === 0) return null;
+                    return (
+                        <div style={{
+                            position: 'absolute', top: editMode ? 46 : 12, left: '50%', transform: 'translateX(-50%)', zIndex: 25,
+                            background: '#ef4444', color: 'white', padding: '6px 16px', borderRadius: '8px',
+                            fontSize: '13px', fontWeight: 700, pointerEvents: 'none',
+                            boxShadow: '0 4px 12px rgba(239,68,68,.4)', display: 'flex', alignItems: 'center', gap: '8px'
+                        }}>
+                            <span>⚠️</span> Attenzione: i tavoli {dups.join(', ')} sono duplicati!
+                        </div>
+                    );
+                })()}
 
                 {/* Zoom controls */}
                 <div style={{ 

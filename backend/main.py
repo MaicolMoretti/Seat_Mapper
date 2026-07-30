@@ -62,8 +62,9 @@ def _migrate_sqlite():
     if not os.path.exists(db_path):
         return  # fresh DB, create_all already covered it
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
 
     def _columns(table: str):
         cur.execute(f"PRAGMA table_info({table})")
@@ -140,55 +141,63 @@ async def upload_progress(task_id: str):
 
 
 def process_map_background(task_id: str, filepath: str):
-    db = database.SessionLocal()
+    def update_progress(percent, msg):
+        progress_store[task_id] = {
+            "progress": percent, "message": msg, "done": False, "error": False
+        }
+
     try:
-        def update_progress(percent, msg):
-            progress_store[task_id] = {
-                "progress": percent, "message": msg, "done": False, "error": False
-            }
-
-        # Clear previous data
-        db.query(models.TableNumberOverride).delete()
-        db.query(models.Seat).delete()
-        db.query(models.Table).delete()
-        db.query(models.MapImage).delete()
-        db.commit()
-
-        map_img = models.MapImage(filename="map.jpg", filepath=filepath)
-        db.add(map_img)
-        db.flush()
-
+        # Step 1: Detect tables & seats via computer vision FIRST (No DB lock during heavy OCR)
         tables_data = processor.detect_tables_and_seats(
             filepath, progress_callback=update_progress
         )
 
-        for t_data in tables_data:
-            table = models.Table(
-                map_id=map_img.id,
-                table_number=t_data["table_id"],
-                contour_x=t_data["contour"]["x"],
-                contour_y=t_data["contour"]["y"],
-                contour_w=t_data["contour"]["w"],
-                contour_h=t_data["contour"]["h"],
-                angle=t_data["contour"].get("angle", 0.0),
-                detected_by="auto",          # ← stamped by pipeline
-            )
-            db.add(table)
+        # Step 2: Save to database in a quick atomic transaction
+        db = database.SessionLocal()
+        try:
+            # Clear previous data
+            db.query(models.TableNumberOverride).delete()
+            db.query(models.Seat).delete()
+            db.query(models.Table).delete()
+            db.query(models.MapImage).delete()
+
+            map_img = models.MapImage(filename="map.jpg", filepath=filepath)
+            db.add(map_img)
             db.flush()
 
-            for s_data in t_data["seats"]:
-                seat = models.Seat(
-                    table_id=table.id,
-                    seat_number=s_data["seat_id"],
-                    position_x=s_data["position"][0],
-                    position_y=s_data["position"][1],
-                    angle=s_data.get("angle", 0.0),
-                    occupied=s_data["occupied"],
-                    detected_by="auto",      # ← stamped by pipeline
+            for t_data in tables_data:
+                table = models.Table(
+                    map_id=map_img.id,
+                    table_number=t_data["table_id"],
+                    contour_x=t_data["contour"]["x"],
+                    contour_y=t_data["contour"]["y"],
+                    contour_w=t_data["contour"]["w"],
+                    contour_h=t_data["contour"]["h"],
+                    angle=t_data["contour"].get("angle", 0.0),
+                    detected_by="auto",          # ← stamped by pipeline
                 )
-                db.add(seat)
+                db.add(table)
+                db.flush()
 
-        db.commit()
+                for s_data in t_data["seats"]:
+                    seat = models.Seat(
+                        table_id=table.id,
+                        seat_number=s_data["seat_id"],
+                        position_x=s_data["position"][0],
+                        position_y=s_data["position"][1],
+                        angle=s_data.get("angle", 0.0),
+                        occupied=s_data["occupied"],
+                        detected_by="auto",      # ← stamped by pipeline
+                    )
+                    db.add(seat)
+
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
         progress_store[task_id] = {
             "progress": 100, "message": "Done!", "done": True, "error": False
         }
@@ -201,8 +210,7 @@ def process_map_background(task_id: str, filepath: str):
         progress_store[task_id] = {
             "progress": 100, "message": f"Error: {str(e)}", "done": True, "error": True
         }
-    finally:
-        db.close()
+
 
 
 @app.post("/upload-map")
