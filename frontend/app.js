@@ -99,7 +99,195 @@ function App() {
     useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
     useEffect(() => { editModeRef.current = editMode; }, [editMode]);
 
+    // Stats modal state
+    const [showStatsModal, setShowStatsModal] = useState(false);
+    const [statsHistory, setStatsHistory] = useState(null);
+    const chartInstanceRef = useRef(null);
+
+    const fetchStatsHistory = useCallback(async () => {
+        try {
+            const r = await fetch(`${API_BASE}/stats/history`);
+            const data = await r.json();
+            setStatsHistory(data);
+        } catch (e) {
+            console.error('fetchStatsHistory', e);
+        }
+    }, []);
+
+    const resetStatsHistory = async () => {
+        if (!window.confirm("Sei sicuro di voler azzerare tutti i dati storici delle statistiche e il contatore?")) return;
+        try {
+            await fetch(`${API_BASE}/stats/reset`, { method: 'POST' });
+            fetchStatsHistory();
+            fetchStats();
+        } catch (e) {
+            console.error('resetStatsHistory', e);
+        }
+    };
+
+    const downloadPDFReport = async () => {
+        try {
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const element = document.getElementById('stats-report-content');
+            if (!element) return;
+
+            const canvas = await window.html2canvas(element, { scale: 2 });
+            const imgData = canvas.toDataURL('image/png');
+            const imgWidth = 190;
+            const pageHeight = 295;
+            const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+            pdf.setFontSize(18);
+            pdf.text("Report Statistiche Occupazione", 15, 15);
+            pdf.setFontSize(10);
+            pdf.text(`Data e Ora: ${new Date().toLocaleString('it-IT')}`, 15, 22);
+
+            pdf.addImage(imgData, 'PNG', 10, 28, imgWidth, imgHeight);
+            pdf.save(`Report_Statistiche_Occupazione_${new Date().toISOString().slice(0, 10)}.pdf`);
+        } catch (err) {
+            console.error("PDF Generation error", err);
+            alert("Errore durante la generazione del file PDF: " + err.message);
+        }
+    };
+
+    const downloadJSONData = () => {
+        if (!statsHistory) return;
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(statsHistory, null, 2));
+        const downloadAnchor = document.createElement('a');
+        downloadAnchor.setAttribute("href", dataStr);
+        downloadAnchor.setAttribute("download", `statistiche_occupazione_${new Date().toISOString().slice(0, 10)}.json`);
+        document.body.appendChild(downloadAnchor);
+        downloadAnchor.click();
+        downloadAnchor.remove();
+    };
+
+    // Render Chart.js when statsHistory updates or modal opens
+    useEffect(() => {
+        if (!showStatsModal || !statsHistory) return;
+
+        const timer = setTimeout(() => {
+            const canvas = document.getElementById('occupancyChart');
+            if (!canvas) return;
+
+            if (chartInstanceRef.current) {
+                chartInstanceRef.current.destroy();
+            }
+
+            const ctx = canvas.getContext('2d');
+            const labels = statsHistory.history.map(item => item.time_str);
+            const dataValues = statsHistory.history.map(item => item.occupied_seats);
+
+            // Create gradient
+            const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+            gradient.addColorStop(0, 'rgba(59, 130, 246, 0.4)');
+            gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+
+            // Plugin for Max/Min Peak Annotations
+            const peakAnnotationPlugin = {
+                id: 'peakAnnotations',
+                afterDatasetsDraw(chart) {
+                    const { ctx, scales: { x, y } } = chart;
+                    if (!statsHistory.history || statsHistory.history.length === 0) return;
+
+                    const history = statsHistory.history;
+                    const maxVal = statsHistory.max_peak;
+                    const minVal = statsHistory.min_peak;
+
+                    const maxIdx = history.findIndex(h => h.occupied_seats === maxVal);
+                    const minIdx = history.findIndex(h => h.occupied_seats === minVal);
+
+                    // Draw Max Peak badge
+                    if (maxIdx !== -1) {
+                        const meta = chart.getDatasetMeta(0);
+                        const point = meta.data[maxIdx];
+                        if (point) {
+                            ctx.save();
+                            ctx.fillStyle = '#ef4444';
+                            ctx.beginPath();
+                            ctx.arc(point.x, point.y, 6, 0, 2 * Math.PI);
+                            ctx.fill();
+
+                            ctx.fillStyle = '#b91c1c';
+                            ctx.font = 'bold 11px Inter, sans-serif';
+                            ctx.textAlign = 'center';
+                            ctx.fillText(`Max (${maxVal})`, point.x, point.y - 10);
+                            ctx.restore();
+                        }
+                    }
+
+                    // Draw Min Peak badge
+                    if (minIdx !== -1 && minIdx !== maxIdx) {
+                        const meta = chart.getDatasetMeta(0);
+                        const point = meta.data[minIdx];
+                        if (point) {
+                            ctx.save();
+                            ctx.fillStyle = '#10b981';
+                            ctx.beginPath();
+                            ctx.arc(point.x, point.y, 6, 0, 2 * Math.PI);
+                            ctx.fill();
+
+                            ctx.fillStyle = '#047857';
+                            ctx.font = 'bold 11px Inter, sans-serif';
+                            ctx.textAlign = 'center';
+                            ctx.fillText(`Min (${minVal})`, point.x, point.y + 18);
+                            ctx.restore();
+                        }
+                    }
+                }
+            };
+
+            chartInstanceRef.current = new window.Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Posti Occupati',
+                        data: dataValues,
+                        borderColor: '#2563eb',
+                        borderWidth: 3,
+                        backgroundColor: gradient,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 4,
+                        pointBackgroundColor: '#1d4ed8',
+                        pointHoverRadius: 6,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function (context) {
+                                    return `Posti occupati: ${context.parsed.y}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { font: { size: 11 }, color: '#64748b' }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { precision: 0, font: { size: 11 }, color: '#64748b' },
+                            grid: { color: '#f1f5f9' }
+                        }
+                    }
+                },
+                plugins: [peakAnnotationPlugin]
+            });
+        }, 100);
+
+        return () => clearTimeout(timer);
+    }, [showStatsModal, statsHistory]);
+
     // ─── Data loading ───────────────────────────────────────────────────
+
     const fetchTables = useCallback(async () => {
         const r = await fetch(`${API_BASE}/layout`);
         setTables(await r.json());
@@ -278,7 +466,7 @@ function App() {
             ctx.rotate((angle * Math.PI) / 180);
 
             // Table bounding box fill
-            ctx.fillStyle = isDuplicate 
+            ctx.fillStyle = isDuplicate
                 ? 'rgba(239,68,68,0.15)'
                 : (isManual ? 'rgba(59,130,246,0.06)' : 'rgba(34,197,94,0.06)');
             ctx.fillRect(- (w * scaleX) / 2, - (h * scaleY) / 2, w * scaleX, h * scaleY);
@@ -288,13 +476,13 @@ function App() {
             ctx.lineWidth = isManual ? 2.5 : 1.5;
             ctx.setLineDash(isManual ? [6, 3] : []);
             ctx.strokeRect(- (w * scaleX) / 2, - (h * scaleY) / 2, w * scaleX, h * scaleY);
-            
+
             if (isDuplicate) {
                 ctx.fillStyle = '#ef4444';
                 ctx.font = `bold ${Math.max(14, 16 * scaleX)}px sans-serif`;
                 ctx.fillText("⚠️", - (w * scaleX) / 2 - 12, - (h * scaleY) / 2 - 4);
             }
-            
+
             ctx.restore();
 
             // Table label
@@ -537,14 +725,14 @@ function App() {
             const touch1 = e.touches[0];
             const touch2 = e.touches[1];
             const dist = Math.hypot(touch1.clientX - touch2.clientX, touch1.clientY - touch2.clientY);
-            
+
             const ratio = dist / touchStartDist.current;
             const newScale = Math.min(Math.max(0.1, touchStartScale.current * ratio), 12);
-            
+
             // Focal point zoom for pinch
             const midX = (touch1.clientX + touch2.clientX) / 2;
             const midY = (touch1.clientY + touch2.clientY) / 2;
-            
+
             const viewport = e.currentTarget.getBoundingClientRect();
             const px = midX - viewport.left;
             const py = midY - viewport.top;
@@ -569,7 +757,7 @@ function App() {
     const performZoom = (factor, centerX, centerY) => {
         const sOld = scale;
         const sNew = Math.min(Math.max(0.1, sOld * factor), 12);
-        
+
         let fx = centerX;
         let fy = centerY;
 
@@ -870,8 +1058,26 @@ function App() {
 
                 {/* Stats */}
                 <div>
-                    <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
-                        Live Statistics
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                            Live Statistics
+                        </div>
+                        <button
+                            onClick={() => {
+                                fetchStatsHistory();
+                                setShowStatsModal(true);
+                            }}
+                            style={{
+                                background: '#2563eb', color: 'white', border: 'none',
+                                borderRadius: '6px', padding: '4px 10px', fontSize: '11px', fontWeight: 700,
+                                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px',
+                                boxShadow: '0 1px 3px rgba(37,99,235,0.3)', transition: 'background 0.15s'
+                            }}
+                            onMouseOver={e => e.currentTarget.style.background = '#1d4ed8'}
+                            onMouseOut={e => e.currentTarget.style.background = '#2563eb'}
+                        >
+                            📊 Statistiche
+                        </button>
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
                         {[
@@ -890,6 +1096,7 @@ function App() {
                         ))}
                     </div>
                 </div>
+
 
                 {/* Edit Layout Mode toggle */}
                 <div>
@@ -1190,14 +1397,14 @@ function App() {
                 })()}
 
                 {/* Zoom controls */}
-                <div style={{ 
-                    position: 'absolute', 
+                <div style={{
+                    position: 'absolute',
                     top: isMobile ? '80px' : '12px',  // Shift down on mobile/tablet to avoid collision
-                    right: '12px', 
-                    zIndex: 20, 
-                    display: 'flex', 
-                    flexDirection: 'column', 
-                    gap: '4px' 
+                    right: '12px',
+                    zIndex: 20,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
                 }}>
                     {[{ label: '+', action: zoomIn }, { label: '⟳', action: centerImage }, { label: '−', action: zoomOut }].map(btn => (
                         <button key={btn.label}
@@ -1264,6 +1471,131 @@ function App() {
                     </div>
                 )}
             </div>
+
+            {/* ── Modal Statistiche ────────────────────────────────────── */}
+            {showStatsModal && (
+                <div style={{
+                    position: 'fixed', inset: 0, zIndex: 100,
+                    background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(4px)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    padding: isMobile ? '10px' : '20px'
+                }}>
+                    <div style={{
+                        background: 'white', width: '100%', maxWidth: '800px',
+                        maxHeight: '90vh', borderRadius: '16px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1)',
+                        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                    }}>
+                        {/* Header Modal */}
+                        <div style={{
+                            padding: '16px 24px', borderBottom: '1px solid #e2e8f0',
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            background: '#f8fafc'
+                        }}>
+                            <div>
+                                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#0f172a' }}>
+                                    📊 Statistiche
+                                </h2>
+                                <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
+                                    Analisi della curva temporale di affluenza e conteggio totale
+                                </div>
+                            </div>
+                            <button onClick={() => setShowStatsModal(false)}
+                                style={{
+                                    background: 'transparent', border: 'none', fontSize: '20px',
+                                    color: '#64748b', cursor: 'pointer', padding: '4px 8px', borderRadius: '6px'
+                                }}>
+                                ✕
+                            </button>
+                        </div>
+
+                        {/* Modal Body / Report Content */}
+                        <div style={{ padding: '24px', overflowY: 'auto', flex: 1 }} id="stats-report-content">
+                            {/* Summary Cards */}
+                            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: '12px', marginBottom: '24px' }}>
+                                <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '12px', padding: '12px', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '11px', fontWeight: 600, color: '#1e40af', textTransform: 'uppercase' }}>Posti Occupati Totali</div>
+                                    <div style={{ fontSize: '24px', fontWeight: 800, color: '#1d4ed8', marginTop: '4px' }}>
+                                        {statsHistory ? statsHistory.total_occupied_events : 0}
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: '#3b82f6', marginTop: '2px' }}>Eventi cumulativi</div>
+                                </div>
+                                <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '12px', padding: '12px', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '11px', fontWeight: 600, color: '#991b1b', textTransform: 'uppercase' }}>Picco Massimo</div>
+                                    <div style={{ fontSize: '24px', fontWeight: 800, color: '#dc2626', marginTop: '4px' }}>
+                                        {statsHistory ? statsHistory.max_peak : 0}
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: '#ef4444', marginTop: '2px' }}>Max affluenza contemporanea</div>
+                                </div>
+                                <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: '12px', padding: '12px', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '11px', fontWeight: 600, color: '#065f46', textTransform: 'uppercase' }}>Picco Minimo</div>
+                                    <div style={{ fontSize: '24px', fontWeight: 800, color: '#059669', marginTop: '4px' }}>
+                                        {statsHistory ? statsHistory.min_peak : 0}
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: '#10b981', marginTop: '2px' }}>Min affluenza registrata</div>
+                                </div>
+                                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '12px', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '11px', fontWeight: 600, color: '#475569', textTransform: 'uppercase' }}>Posti Attuali</div>
+                                    <div style={{ fontSize: '24px', fontWeight: 800, color: '#0f172a', marginTop: '4px' }}>
+                                        {stats.occupied_seats} / {stats.total_seats}
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px' }}>{stats.free_seats} liberi al momento</div>
+                                </div>
+                            </div>
+
+                            {/* Chart Container */}
+                            <div style={{ background: '#fafafa', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '16px', marginBottom: '20px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>
+                                        Curva d'Occupazione nel Tempo (Asse X: Tempo | Asse Y: Posti Occupati)
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '12px', fontSize: '11px', fontWeight: 600 }}>
+                                        <span style={{ color: '#dc2626' }}>🔴 Max Picco</span>
+                                        <span style={{ color: '#059669' }}>🟢 Min Picco</span>
+                                    </div>
+                                </div>
+                                <div style={{ height: '280px', width: '100%', position: 'relative' }}>
+                                    <canvas id="occupancyChart" />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Modal Footer / Actions */}
+                        <div style={{
+                            padding: '16px 24px', borderTop: '1px solid #e2e8f0', background: '#f8fafc',
+                            display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center', justifyContent: 'space-between'
+                        }}>
+                            <button onClick={resetStatsHistory}
+                                style={{
+                                    background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca',
+                                    borderRadius: '8px', padding: '9px 14px', fontSize: '13px', fontWeight: 600,
+                                    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px'
+                                }}>
+                                🗑 Azzera statistiche
+                            </button>
+
+                            <div style={{ display: 'flex', gap: '10px' }}>
+                                <button onClick={downloadJSONData}
+                                    style={{
+                                        background: 'white', color: '#334155', border: '1px solid #cbd5e1',
+                                        borderRadius: '8px', padding: '9px 14px', fontSize: '13px', fontWeight: 600,
+                                        cursor: 'pointer'
+                                    }}>
+                                    📄 Salva JSON
+                                </button>
+                                <button onClick={downloadPDFReport}
+                                    style={{
+                                        background: '#2563eb', color: 'white', border: 'none',
+                                        borderRadius: '8px', padding: '9px 16px', fontSize: '13px', fontWeight: 700,
+                                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                                        boxShadow: '0 2px 4px rgba(37,99,235,0.25)'
+                                    }}>
+                                    📥 Salva Report PDF
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -1271,3 +1603,4 @@ function App() {
 // ─── Mount ───────────────────────────────────────────────────────────────────
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<App />);
+

@@ -286,18 +286,50 @@ def get_tables(db: Session = Depends(get_db)):
     return get_layout(db)
 
 
+import time
+from datetime import datetime
+
+def _record_occupancy_change(db: Session, newly_occupied_count: int = 0):
+    """Records an occupancy event log and updates cumulative total occupied events counter."""
+    now = time.time()
+    time_str = datetime.fromtimestamp(now).strftime("%H:%M:%S")
+    
+    total_seats = db.query(models.Seat).count()
+    occupied_seats = db.query(models.Seat).filter(models.Seat.occupied == True).count()
+    
+    # Update total cumulative events counter if newly_occupied_count > 0
+    if newly_occupied_count > 0:
+        counter = db.query(models.StatsCounter).filter(models.StatsCounter.key == "total_occupied_events").first()
+        if not counter:
+            counter = models.StatsCounter(key="total_occupied_events", value=0)
+            db.add(counter)
+        counter.value += newly_occupied_count
+    
+    # Save occupancy log entry
+    log_entry = models.OccupancyLog(
+        timestamp=now,
+        time_str=time_str,
+        occupied_seats=occupied_seats,
+        total_seats=total_seats
+    )
+    db.add(log_entry)
+    db.commit()
+
 @app.post("/seat/toggle/{seat_id}")
 async def toggle_seat(seat_id: int, db: Session = Depends(get_db)):
     seat = db.query(models.Seat).filter(models.Seat.id == seat_id).first()
     if not seat:
         raise HTTPException(status_code=404, detail="Seat not found")
     
-    # Log for undo (using the router's helper if available, or just toggle)
-    # manual._log_action(db, "TOGGLE_OCCUPANCY", seat.id, {"occupied": seat.occupied})
-    
+    was_occupied = seat.occupied
     seat.occupied = not seat.occupied
-    db.commit()
+    
+    # If it transitioned from False to True, increment cumulative by 1
+    newly_occupied = 1 if (not was_occupied and seat.occupied) else 0
+    _record_occupancy_change(db, newly_occupied)
+    
     await broadcast_layout_update()
+    await manager.broadcast({"type": "STATS_UPDATE"})
     return {"id": seat.id, "occupied": seat.occupied}
 
 
@@ -305,13 +337,14 @@ async def toggle_seat(seat_id: int, db: Session = Depends(get_db)):
 async def clear_all_seats(db: Session = Depends(get_db)):
     db.query(models.Seat).update({models.Seat.occupied: False})
     db.commit()
+    _record_occupancy_change(db, 0)
     await broadcast_layout_update()
+    await manager.broadcast({"type": "STATS_UPDATE"})
     return {"message": "All seats cleared"}
 
 
 def _resolve_table_by_number(db: Session, table_number: int):
     """Find a table by its *resolved* number (override takes priority)."""
-    # 1. Check if any table has been manually renamed to this number
     override = (
         db.query(models.TableNumberOverride)
         .filter(models.TableNumberOverride.manual_number == table_number)
@@ -319,7 +352,6 @@ def _resolve_table_by_number(db: Session, table_number: int):
     )
     if override:
         return db.query(models.Table).filter(models.Table.id == override.table_id).first()
-    # 2. Fall back to the original OCR/auto number
     return db.query(models.Table).filter(models.Table.table_number == table_number).first()
 
 
@@ -338,7 +370,11 @@ async def add_seats(table_number: int, amount: int = Form(...), db: Session = De
     for seat in free_seats:
         seat.occupied = True
     db.commit()
+    
+    _record_occupancy_change(db, len(free_seats))
+    
     await broadcast_layout_update()
+    await manager.broadcast({"type": "STATS_UPDATE"})
     return {"message": f"Added {len(free_seats)} seats (marked as occupied)"}
 
 
@@ -357,7 +393,11 @@ async def remove_seats(table_number: int, amount: int = Form(...), db: Session =
     for seat in occupied_seats:
         seat.occupied = False
     db.commit()
+    
+    _record_occupancy_change(db, 0)
+    
     await broadcast_layout_update()
+    await manager.broadcast({"type": "STATS_UPDATE"})
     return {"message": f"Removed {len(occupied_seats)} seats (marked as free)"}
 
 
@@ -367,9 +407,65 @@ def get_stats(db: Session = Depends(get_db)):
     total_seats = db.query(models.Seat).count()
     occupied_seats = db.query(models.Seat).filter(models.Seat.occupied == True).count()
     free_seats = total_seats - occupied_seats
+    
+    counter = db.query(models.StatsCounter).filter(models.StatsCounter.key == "total_occupied_events").first()
+    total_occupied_events = counter.value if counter else 0
+    
     return {
         "num_tables": num_tables,
         "total_seats": total_seats,
         "occupied_seats": occupied_seats,
         "free_seats": free_seats,
+        "total_occupied_events": total_occupied_events
     }
+
+
+@app.get("/stats/history")
+def get_stats_history(db: Session = Depends(get_db)):
+    logs = db.query(models.OccupancyLog).order_by(models.OccupancyLog.timestamp.asc()).all()
+    
+    counter = db.query(models.StatsCounter).filter(models.StatsCounter.key == "total_occupied_events").first()
+    total_occupied_events = counter.value if counter else 0
+    
+    if not logs:
+        # If no logs exist yet, capture initial snapshot
+        _record_occupancy_change(db, 0)
+        logs = db.query(models.OccupancyLog).order_by(models.OccupancyLog.timestamp.asc()).all()
+        
+    history = [
+        {
+            "id": l.id,
+            "timestamp": l.timestamp,
+            "time_str": l.time_str,
+            "occupied_seats": l.occupied_seats,
+            "total_seats": l.total_seats
+        }
+        for l in logs
+    ]
+    
+    occupied_vals = [h["occupied_seats"] for h in history]
+    max_peak = max(occupied_vals) if occupied_vals else 0
+    min_peak = min(occupied_vals) if occupied_vals else 0
+    
+    return {
+        "total_occupied_events": total_occupied_events,
+        "max_peak": max_peak,
+        "min_peak": min_peak,
+        "history": history
+    }
+
+
+@app.post("/stats/reset")
+async def reset_stats(db: Session = Depends(get_db)):
+    db.query(models.OccupancyLog).delete()
+    counter = db.query(models.StatsCounter).filter(models.StatsCounter.key == "total_occupied_events").first()
+    if counter:
+        counter.value = 0
+    db.commit()
+    
+    # Record initial reset point
+    _record_occupancy_change(db, 0)
+    
+    await manager.broadcast({"type": "STATS_UPDATE"})
+    return {"message": "Statistiche azzerate con successo"}
+

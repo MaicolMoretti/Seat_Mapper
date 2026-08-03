@@ -67,3 +67,20 @@ class ActionLog(Base):
     target_id = Column(Integer)   # e.g., seat_id or table_id
     old_state = Column(String)    # JSON string of the state before action
     timestamp = Column(Float)
+
+class OccupancyLog(Base):
+    """Stores time series of occupied seat counts."""
+    __tablename__ = "occupancy_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(Float, index=True)
+    time_str = Column(String)
+    occupied_seats = Column(Integer)
+    total_seats = Column(Integer)
+
+class StatsCounter(Base):
+    """Stores persistent counters like total cumulative occupied count."""
+    __tablename__ = "stats_counter"
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, index=True)
+    value = Column(Integer, default=0)
+

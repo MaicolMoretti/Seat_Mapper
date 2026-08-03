@@ -36,9 +36,9 @@ project-root/
 - **Control Panel**: Add or Remove occupants in bulk per table. The logic is now **additive**, meaning your batch commands build upon whatever is already manually selected.
 - **Clear All Seats**: A dedicated "Clear All" button (with safety confirmation) to quickly reset the entire map's occupancy.
 - **Improved Navigation**: Focal-point zooming allows you to zoom directly into your mouse cursor (PC) or the pinch-point between your fingers (Mobile/Tablet), preventing map drift.
-- **Real-Time Statistics**: Live counters of free vs occupied seats.
+- **Real-Time Statistics & Reports**: Live counters of free vs occupied seats, plus a dedicated "Statistiche" module featuring a temporal occupancy chart (powered by Chart.js) to track usage peaks. Includes functionality to reset data or export history as JSON and PDF reports (via jsPDF & html2canvas).
 - **Undo System**: Supports undoing manual actions (`Ctrl+Z`).
-- **Data Persistence**: Automatic SQLite storage of raw detections and manual overrides.
+- **Data Persistence**: Automatic SQLite storage of raw detections, manual overrides, and historical occupancy events.
 
 ## Architecture
 
