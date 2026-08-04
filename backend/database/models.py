@@ -44,6 +44,7 @@ class Seat(Base):
     angle = Column(Float, default=0.0)
     
     occupied = Column(Boolean, default=False)
+    occupied_at = Column(Float, nullable=True)
 
     # "auto" = detected by vision pipeline, "manual" = added by user
     detected_by = Column(String, default="auto")

@@ -5,6 +5,8 @@ const API_BASE = window.location.origin; // Dynamically resolve for local networ
 const WS_BASE = window.location.origin.replace(/^http/, 'ws');
 const SEAT_HIT_RADIUS = 24;        // px in image space for click detection
 const OCCUPIED_COLOR = '#ef4444'; // red-500
+const OCCUPIED_LATE_COLOR = '#3182CE'; // blue-500
+const LATE_MS_THRESHOLD = 20 * 60 * 1000; // 20 mins
 const AUTO_COLOR = '#22c55e'; // green-500  — auto-detected
 const MANUAL_COLOR = '#3b82f6'; // blue-500   — manually added/edited
 const OVERRIDE_COLOR = '#f59e0b'; // amber-500  — number overridden
@@ -520,7 +522,11 @@ function App() {
                 ctx.setLineDash([]);
 
                 if (seat.occupied) {
-                    ctx.fillStyle = OCCUPIED_COLOR;
+                    if (seat.occupied_at && (Date.now() - (seat.occupied_at * 1000) >= LATE_MS_THRESHOLD)) {
+                        ctx.fillStyle = OCCUPIED_LATE_COLOR;
+                    } else {
+                        ctx.fillStyle = OCCUPIED_COLOR;
+                    }
                     ctx.beginPath();
                     ctx.arc(0, 0, half * 0.65, 0, Math.PI * 2);
                     ctx.fill();
@@ -571,6 +577,12 @@ function App() {
         const id = setTimeout(drawCanvas, 30);
         return () => clearTimeout(id);
     }, [scale, offset, drawCanvas]);
+
+    useEffect(() => {
+        // Redraw canvas every 10 seconds to update dynamic time-based colors
+        const id = setInterval(drawCanvas, 10000);
+        return () => clearInterval(id);
+    }, [drawCanvas]);
 
     // ─── Hit-test helpers ────────────────────────────────────────────────
     const hitSeat = (imgX, imgY) => {

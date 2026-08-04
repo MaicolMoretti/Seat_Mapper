@@ -272,6 +272,7 @@ def get_layout(db: Session = Depends(get_db)):
                     "position": [s.position_x, s.position_y],
                     "angle": s.angle or 0.0,
                     "occupied": s.occupied,
+                    "occupied_at": s.occupied_at,
                     "detected_by": s.detected_by or "auto",
                 }
                 for s in seats
@@ -323,6 +324,7 @@ async def toggle_seat(seat_id: int, db: Session = Depends(get_db)):
     
     was_occupied = seat.occupied
     seat.occupied = not seat.occupied
+    seat.occupied_at = time.time() if seat.occupied else None
     
     # If it transitioned from False to True, increment cumulative by 1
     newly_occupied = 1 if (not was_occupied and seat.occupied) else 0
@@ -335,7 +337,7 @@ async def toggle_seat(seat_id: int, db: Session = Depends(get_db)):
 
 @app.post("/seat/clear-all")
 async def clear_all_seats(db: Session = Depends(get_db)):
-    db.query(models.Seat).update({models.Seat.occupied: False})
+    db.query(models.Seat).update({models.Seat.occupied: False, models.Seat.occupied_at: None})
     db.commit()
     _record_occupancy_change(db, 0)
     await broadcast_layout_update()
@@ -367,8 +369,10 @@ async def add_seats(table_number: int, amount: int = Form(...), db: Session = De
         .limit(amount)
         .all()
     )
+    now = time.time()
     for seat in free_seats:
         seat.occupied = True
+        seat.occupied_at = now
     db.commit()
     
     _record_occupancy_change(db, len(free_seats))
@@ -386,12 +390,13 @@ async def remove_seats(table_number: int, amount: int = Form(...), db: Session =
     occupied_seats = (
         db.query(models.Seat)
         .filter(models.Seat.table_id == table.id, models.Seat.occupied == True)
-        .order_by(models.Seat.detected_by.asc())
+        .order_by(models.Seat.occupied_at.asc())
         .limit(amount)
         .all()
     )
     for seat in occupied_seats:
         seat.occupied = False
+        seat.occupied_at = None
     db.commit()
     
     _record_occupancy_change(db, 0)
